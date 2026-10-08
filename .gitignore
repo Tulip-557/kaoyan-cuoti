@@ -1,0 +1,33 @@
+# ── Obsidian 运行时状态（每天都在变，不需要版本历史）──
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache/
+.obsidian/graph.json.bak
+
+# ── 系统 / 编辑器临时文件 ──
+.trash/
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── AI 工具的本地会话与记忆（不该分享 / 提交）──
+.workbuddy/
+.zcode/sessions/
+.claude/
+.cursor/
+
+# ── 收件箱的临时吞吐区（说明.md 保留，其余不入库）──
+收件箱/已处理/*
+!收件箱/已处理/说明.md
+收件箱/待确认/*
+!收件箱/待确认/说明.md
+
+# ── 个人笔记内容 ──
+# 如果你 fork 后想只开源这套框架、不公开自己的错题，取消下面注释：
+# 错题/*/
+# !错题/*/*-索引.md
+# 知识点/英语-单词本.md
+# 附件/*
+# !附件/说明.md

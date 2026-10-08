@@ -1,0 +1,79 @@
+{
+  "collapse-filter": true,
+  "search": "",
+  "showTags": false,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "tag:#高频错题",
+      "color": {
+        "a": 1,
+        "rgb": 14701138
+      }
+    },
+    {
+      "query": "path:错题/数学",
+      "color": {
+        "a": 1,
+        "rgb": 4886745
+      }
+    },
+    {
+      "query": "path:错题/英语",
+      "color": {
+        "a": 1,
+        "rgb": 5420936
+      }
+    },
+    {
+      "query": "path:错题/政治",
+      "color": {
+        "a": 1,
+        "rgb": 15246141
+      }
+    },
+    {
+      "query": "path:错题/专业课",
+      "color": {
+        "a": 1,
+        "rgb": 10187471
+      }
+    },
+    {
+      "query": "path:知识点",
+      "color": {
+        "a": 1,
+        "rgb": 14271050
+      }
+    },
+    {
+      "query": "tag:#错题",
+      "color": {
+        "a": 1,
+        "rgb": 7244710
+      }
+    },
+    {
+      "query": "",
+      "color": {
+        "a": 1,
+        "rgb": 9079434
+      }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": false,
+  "textFadeMultiplier": -0.7,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": false,
+  "centerStrength": 0.518713248970312,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 0.9999999999999892,
+  "close": true
+}

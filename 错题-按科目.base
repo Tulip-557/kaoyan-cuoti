@@ -1,0 +1,58 @@
+filters:
+  and:
+    - file.hasTag("错题")
+views:
+  - type: table
+    name: 数学
+    filters:
+      and:
+        - note.subject == "数学"
+    order:
+      - file.name
+      - module
+      - type
+      - method
+      - topic
+      - error
+      - status
+      - next_review
+  - type: table
+    name: 英语
+    filters:
+      and:
+        - note.subject == "英语"
+    order:
+      - file.name
+      - type
+      - topic
+      - error
+      - status
+      - next_review
+  - type: table
+    name: 政治
+    filters:
+      and:
+        - note.subject == "政治"
+    order:
+      - file.name
+      - module
+      - type
+      - method
+      - topic
+      - error
+      - status
+      - weight
+  - type: table
+    name: 专业课
+    filters:
+      and:
+        - note.subject == "专业课"
+    order:
+      - file.name
+      - module
+      - type
+      - method
+      - topic
+      - error
+      - status
+      - weight

@@ -1,0 +1,84 @@
+filters:
+  and:
+    - file.hasTag("错题")
+views:
+  - type: table
+    name: 待复习（未掌握）
+    filters:
+      and:
+        - note.status == "未掌握"
+    order:
+      - file.name
+      - subject
+      - module
+      - type
+      - method
+      - topic
+      - error
+      - next_review
+  - type: table
+    name: 复习中
+    filters:
+      and:
+        - note.status == "复习中"
+    order:
+      - file.name
+      - subject
+      - module
+      - method
+      - topic
+      - next_review
+  - type: table
+    name: 高频错题
+    filters:
+      and:
+        - file.hasTag("高频错题")
+    order:
+      - file.name
+      - subject
+      - topic
+      - method
+      - error
+      - wrong_count
+  - type: table
+    name: 全部错题
+    order:
+      - file.name
+      - subject
+      - module
+      - type
+      - method
+      - topic
+      - error
+      - status
+      - weight
+      - wrong_count
+      - date
+      - next_review
+  - type: table
+    name: 按材料分组
+    groupBy:
+      property: book
+      direction: ASC
+    order:
+      - file.name
+      - topic
+      - method
+      - error
+      - type
+      - wrong_count
+      - status
+  - type: table
+    name: 只重点
+    filters:
+      and:
+        - note.weight == "重点"
+    order:
+      - file.name
+      - subject
+      - module
+      - type
+      - topic
+      - method
+      - error
+      - status
