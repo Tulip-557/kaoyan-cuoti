@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""工作台渲染器 v3：把 库维护.py 扫描好的统计数据渲染成单文件 HTML 仪表盘。
+"""工作台渲染器 v4：按"轻重缓急"分三个视图的单文件 HTML 仪表盘。
 
-设计语言（参考 Linear / Vercel / Raycast 的"高级暗色"+ Bento + 玻璃拟态）：
-近黑底色上叠极光径向光晕；毛玻璃卡片（backdrop-blur + 发丝边框）；
-渐变文字大数字；克制的入场微动效。纯标准库、零 CDN、离线可用。
-数据由 库维护.py 的 dashboard 子命令准备，本模块只负责"长什么样"。
+信息架构：
+  今日（行动层）——今天该重做的题（按 逾期>高频>到期 排序）、警报摘要、
+                  未来 7 天负载、状态环；打开页面默认落在这一页。
+  复盘（分析层）——掌握率、科目构成、热力图、周趋势、错因/书籍/知识点分布。
+  题库（记录层）——高频错题榜、最近录入。
+
+视觉：Linear/Vercel 式高级暗色 + 玻璃拟态 + 极光背景；零依赖、零 CDN。
+数据由 库维护.py 的 dashboard 子命令准备；本模块只负责"长什么样"。
 """
 import datetime as dt
 import html
@@ -30,6 +34,9 @@ _ICONS = {
     "brain": '<path d="M9.5 3A3.5 3.5 0 0 0 6 6.5 3 3 0 0 0 4 9.3a3 3 0 0 0 1.6 2.7A3 3 0 0 0 6 15a3 3 0 0 0 3 3 3 3 0 0 0 3-3V6.5A3.5 3.5 0 0 0 9.5 3Z"/><path d="M14.5 3A3.5 3.5 0 0 1 18 6.5a3 3 0 0 1 2 2.8 3 3 0 0 1-1.6 2.7A3 3 0 0 1 18 15a3 3 0 0 1-3 3 3 3 0 0 1-3-3"/>',
     "trophy": '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4a3 3 0 0 0 3 4M17 6h3a3 3 0 0 1-3 4"/>',
     "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+    "flame": '<path d="M12 3s5 4.5 5 9a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5 0 1.5 1 2.5 2 2.5-1-2.5 0-5.5 1-7Z"/>',
+    "inbox": '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13l3.5 7v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5Z"/>',
+    "ring": '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 9 9"/><circle cx="12" cy="12" r="4"/>',
 }
 
 
@@ -49,30 +56,24 @@ def _obsidian(file_rel, stem):
     return f'<a class="note" href="{href}">{html.escape(stem)}</a>'
 
 
-def _kpi(num, label, sub="", tone=""):
-    tone_cls = f" t-{tone}" if tone else ""
-    sub_html = f'<div class="kpi-s">{sub}</div>' if sub else ""
-    return (f'<div class="kpi"><div class="kpi-n count{tone_cls}" data-n="{num}">0</div>'
-            f'<div class="kpi-l">{html.escape(label)}</div>{sub_html}</div>')
-
-
-def _donut(dist, total, cap):
+def _ring(dist, colors, total, cap):
+    """通用环形图：dist=[(label,count)]，colors={label:hex}。"""
     if not dist or not total:
-        return '<div class="muted">暂无科目数据</div>'
+        return '<div class="muted">暂无数据</div>'
     segs, acc = [], 0.0
     gap = 1.0
     for label, count in dist:
         pct = count / total * 100
-        color = SUBJ_COLORS.get(label, "#8a94a6")
+        color = colors.get(label, "#8a94a6")
         segs.append(
             f'<circle cx="21" cy="21" r="15.9155" fill="none" stroke="{color}" stroke-width="7" '
             f'pathLength="100" stroke-linecap="round" '
             f'stroke-dasharray="{max(0.5, pct - gap):.2f} {100 - max(0.5, pct - gap):.2f}" '
             f'stroke-dashoffset="{-acc - gap / 2:.2f}" transform="rotate(-90 21 21)">'
-            f'<title>{html.escape(str(label))} · {count} 道</title></circle>')
+            f'<title>{html.escape(str(label))} · {count}</title></circle>')
         acc += pct
     legend = "".join(
-        f'<span class="lg"><i style="background:{SUBJ_COLORS.get(l, "#8a94a6")}"></i>'
+        f'<span class="lg"><i style="background:{colors.get(l, "#8a94a6")}"></i>'
         f'{html.escape(str(l))}<b>{c}</b></span>' for l, c in dist)
     return (f'<div class="donut-wrap"><svg viewBox="0 0 42 42" class="donut">'
             f'<circle cx="21" cy="21" r="15.9155" fill="none" stroke="var(--track)" stroke-width="7"/>'
@@ -135,7 +136,6 @@ def _smooth(pts):
 
 
 def _sparkline(pairs):
-    """近 8 周新增：平滑面积折线（SVG）。"""
     vals = [p["count"] for p in pairs]
     n = len(vals)
     if n < 2:
@@ -150,7 +150,7 @@ def _sparkline(pairs):
     line = _smooth(pts)
     area = line + f"L{pts[-1][0]:.1f},{H - bottom + 2} L{pts[0][0]:.1f},{H - bottom + 2} Z"
     dots = "".join(
-        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.4" fill="var(--card)" stroke="var(--accent)" stroke-width="2"/>'
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.4" fill="var(--card-solid)" stroke="var(--accent)" stroke-width="2"/>'
         f'<text x="{x:.1f}" y="{y - 10:.1f}" text-anchor="middle" class="sv">{v}</text>'
         for (x, y), v in zip(pts, vals) if v)
     labels = "".join(
@@ -196,8 +196,8 @@ def _heatmap(note_days, today_iso):
         labels.append(f"<span>{week_start.month}月</span>" if week_start.month != prev_month else "<span></span>")
         prev_month = week_start.month
         cells = []
-        for d in range(7):
-            day = week_start + dt.timedelta(days=d)
+        for dd in range(7):
+            day = week_start + dt.timedelta(days=dd)
             if day > t:
                 cells.append('<i class="hcell fut"></i>')
                 continue
@@ -214,9 +214,37 @@ def _heatmap(note_days, today_iso):
             f'<div class="hgrid">{"".join(cols)}</div></div></div>' + legend)
 
 
+def _priority_due(due):
+    """轻重缓急排序：逾期最久 > 错过次数多 > 到期早。"""
+    return sorted(due, key=lambda x: (-x["overdue"], -x["wrong_count"], x["due"]))
+
+
+def _due_items(due, top=False):
+    """生成清单条目；top=True 时仅组内第一题加"最优先"高亮。"""
+    items = []
+    for i, x in enumerate(due):
+        color = SUBJ_COLORS.get(x["subject"], "#8a94a6")
+        if x["overdue"] > 0:
+            due_tag = f'<span class="due-tag over">逾期 {x["overdue"]} 天</span>'
+        else:
+            due_tag = '<span class="due-tag">今天</span>'
+        wc = (f'<span class="wc" title="累计做错 {x["wrong_count"]} 次">×{x["wrong_count"]}</span>'
+              if x["wrong_count"] else "")
+        hot = '<span class="wc hot" title="高频错题（错 ≥3 次）">高频</span>' if x["wrong_count"] >= 3 else ""
+        over_cls = " is-over" if x["overdue"] > 0 else ""
+        top_cls = " top1" if (top and i == 0) else ""
+        items.append(
+            f'<div class="due{over_cls}{top_cls}" data-subject="{html.escape(x["subject"])}" style="--sc:{color}">'
+            f'<span class="rank-mini">{i + 1}</span>'
+            f'<span class="due-main">{_obsidian(x["file"], x["stem"])}'
+            f'<em class="tp">{html.escape(x["topic"])}</em></span>'
+            f'{hot}{wc}{due_tag}</div>')
+    return "".join(items)
+
+
 def _due_panel(due):
-    if not due:
-        return '<div class="zero-state">🎉 今天没有到期的错题</div>'
+    """今日该重做：逾期/今天 分组 + 优先级排序 + 科目筛选。"""
+    due = _priority_due(due)
     chips = ['<button class="chip on" data-f="all">全部 ' + str(len(due)) + "</button>"]
     counts = {}
     for x in due:
@@ -225,22 +253,18 @@ def _due_panel(due):
         color = SUBJ_COLORS.get(subj, "#8a94a6")
         chips.append(f'<button class="chip" data-f="{html.escape(subj)}">'
                      f'<i style="background:{color}"></i>{html.escape(subj)} {c}</button>')
-    items = []
-    for x in due:
-        color = SUBJ_COLORS.get(x["subject"], "#8a94a6")
-        if x["overdue"] > 0:
-            due_tag = f'<span class="due-tag over">逾期 {x["overdue"]} 天</span>'
-        else:
-            due_tag = '<span class="due-tag">今天</span>'
-        wc = (f'<span class="wc" title="累计做错 {x["wrong_count"]} 次">×{x["wrong_count"]}</span>'
-              if x["wrong_count"] else "")
-        over_cls = " is-over" if x["overdue"] > 0 else ""
-        items.append(
-            f'<div class="due{over_cls}" data-subject="{html.escape(x["subject"])}" style="--sc:{color}">'
-            f'<span class="due-main">{_obsidian(x["file"], x["stem"])}'
-            f'<em class="tp">{html.escape(x["topic"])}</em></span>'
-            f'{wc}{due_tag}</div>')
-    return f'<div class="chips">{"".join(chips)}</div><div class="due-list">{"".join(items)}</div>'
+    overs = [x for x in due if x["overdue"] > 0]
+    today = [x for x in due if x["overdue"] == 0]
+    body = ""
+    if overs:
+        body += f'<div class="grp g-over">{_icon("alert")}逾期 · {len(overs)} 道，先清这些</div>' + _due_items(overs, top=True)
+    if today:
+        body += f'<div class="grp">{_icon("clock")}今天到期 · {len(today)} 道</div>' + _due_items(today)
+    if not overs and not today:
+        body = ""
+    if due:
+        return f'<div class="chips">{"".join(chips)}</div><div class="due-list">{body}</div>'
+    return ""
 
 
 def _high_table(high):
@@ -288,6 +312,12 @@ def _funnel(status_counts, total, mastery):
         for s in ("未掌握", "复习中", "已掌握"))
     return (f'<div class="mastery"><b class="grad-t">{mastery:.0f}%</b><span>掌握率</span></div>'
             f'<div class="stack big">{segs}</div><div class="f-rows">{rows}</div>')
+
+
+def _stat_chip(icon, num, label, tone=""):
+    tone_cls = f" t-{tone}" if tone else ""
+    return (f'<div class="schip"><div class="schip-n count{tone_cls}" data-n="{num}">0</div>'
+            f'<div class="schip-l">{icon}{html.escape(label)}</div></div>')
 
 
 def _empty_state():
@@ -344,7 +374,6 @@ body{
   background:var(--bg);min-height:100vh;overflow-x:hidden;
   transition:background .3s ease,color .3s ease;
 }
-/* ── 极光背景 ── */
 .aurora{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none}
 .aurora i{position:absolute;border-radius:50%;filter:blur(90px);opacity:.5}
 html[data-theme="light"] .aurora i{opacity:.30;filter:blur(80px)}
@@ -357,66 +386,63 @@ html[data-theme="light"] .aurora i{opacity:.30;filter:blur(80px)}
 
 .wrap{max-width:1160px;margin:0 auto}
 
-/* ── 顶栏 ── */
+/* ── 顶栏：品牌 + 状态徽章 + 视图切换 + 主题 ── */
 .topbar{
-  position:sticky;top:10px;z-index:50;margin:14px -6px 20px;padding:10px 16px;
-  display:flex;align-items:center;gap:14px;border-radius:16px;
+  position:sticky;top:10px;z-index:50;margin:14px -6px 18px;padding:9px 14px;
+  display:flex;align-items:center;gap:10px;border-radius:16px;
   background:var(--card);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
   border:1px solid var(--line);box-shadow:var(--shadow);
 }
-.brand{display:flex;align-items:center;gap:10px;font-size:16.5px;font-weight:700;letter-spacing:.3px}
-.brand svg{width:26px;height:26px}
-.snap{color:var(--sub);font-size:12px;margin-left:auto;text-align:right;line-height:1.5}
+.brand{display:flex;align-items:center;gap:9px;font-size:15.5px;font-weight:700;letter-spacing:.3px;white-space:nowrap}
+.brand svg{width:24px;height:24px;flex:none}
+.tchips{display:flex;gap:7px;margin-left:6px}
+.tchip{
+  display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:5px 11px;border-radius:999px;
+  border:1px solid var(--line);color:var(--sub);white-space:nowrap;
+}
+.tchip b{color:var(--ink);font-variant-numeric:tabular-nums}
+.tchip.cd{border-color:transparent;background:linear-gradient(120deg,rgba(91,124,250,.22),rgba(180,135,255,.22))}
+.tchip.fire{border-color:transparent;background:rgba(255,138,92,.14)}
+.tabs{display:flex;gap:5px;margin-left:auto;padding:4px;border-radius:13px;border:1px solid var(--line2);background:var(--track)}
+.tab{
+  position:relative;border:none;background:transparent;color:var(--sub);font-size:13px;font-weight:600;
+  padding:6px 15px;border-radius:9px;cursor:pointer;transition:all .16s ease;white-space:nowrap;
+}
+.tab:hover{color:var(--ink)}
+.tab.on{background:linear-gradient(120deg,var(--accent2),var(--accent));color:#fff;box-shadow:0 4px 14px rgba(91,124,250,.35)}
+.tab .badge{
+  display:inline-block;margin-left:5px;min-width:18px;padding:0 5px;border-radius:9px;
+  background:var(--warn);color:#fff;font-size:10.5px;line-height:16px;text-align:center;font-weight:700;
+}
+.tab.on .badge{background:rgba(255,255,255,.28)}
 .tbtn{
-  border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:12px;
-  padding:8px 13px;font-size:12.5px;cursor:pointer;display:flex;align-items:center;gap:7px;
-  transition:border-color .2s ease,transform .15s ease;
+  border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:11px;
+  padding:7px 11px;cursor:pointer;display:flex;align-items:center;gap:6px;
+  transition:border-color .2s ease,transform .15s ease;white-space:nowrap;
 }
 .tbtn:hover{border-color:var(--accent);transform:translateY(-1px)}
 .tbtn svg{width:15px;height:15px}
 html[data-theme="dark"] .icon-sun{display:none}
 html[data-theme="light"] .icon-moon{display:none}
 
-/* ── 头部：倒计时 + KPI ── */
-.hero-grid{display:grid;grid-template-columns:300px 1fr;gap:16px;margin-bottom:16px}
-.cd-card{
-  position:relative;overflow:hidden;border-radius:var(--r);padding:20px 22px;
-  background:linear-gradient(140deg,#4353d9 0%,#6d5df0 48%,#a45cf0 100%);
-  color:#fff;display:flex;flex-direction:column;gap:6px;box-shadow:0 24px 60px rgba(80,70,220,.35);
-}
-.cd-card::before{
-  content:"";position:absolute;right:-70px;top:-70px;width:220px;height:220px;border-radius:50%;
-  background:radial-gradient(circle,rgba(255,255,255,.25),transparent 60%);
-}
-.cd-card::after{
-  content:"";position:absolute;left:-50px;bottom:-90px;width:200px;height:200px;border-radius:50%;
-  background:radial-gradient(circle,rgba(255,255,255,.14),transparent 62%);
-}
-.cd-label{font-size:11px;letter-spacing:4px;opacity:.85}
-.cd-num{font-size:52px;font-weight:800;line-height:1.02;font-variant-numeric:tabular-nums;text-shadow:0 4px 24px rgba(0,0,0,.25)}
-.cd-num small{font-size:16px;font-weight:500;margin-left:5px;opacity:.85}
-.cd-date{font-size:12px;opacity:.82}
-.cd-foot{margin-top:auto;padding-top:12px;border-top:1px solid rgba(255,255,255,.28);font-size:12.5px}
-.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+/* ── 视图 ── */
+.view{display:none}
+.view.on{display:block;animation:rise .4s cubic-bezier(.2,.7,.2,1)}
+@media (prefers-reduced-motion: reduce){.view.on{animation:none}}
 
-/* ── 卡片通用（玻璃 + 入场） ── */
-.panel,.kpi{
+/* ── 卡片通用 ── */
+.panel,.kpi,.schip,.hero-card{
   background:var(--card);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
   border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);
   animation:rise .5s cubic-bezier(.2,.7,.2,1) backwards;
 }
-.panel{padding:18px 20px;min-width:0;transition:border-color .2s ease,transform .2s ease}
-.panel:hover{border-color:var(--line)}
-.kpi{padding:14px 16px;transition:transform .18s ease,border-color .18s ease}
+.panel{padding:18px 20px;min-width:0;transition:border-color .2s ease}
 .kpi:hover{transform:translateY(-2px);border-color:var(--accent)}
 @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion: reduce){.panel,.kpi{animation:none}}
-.panel:nth-of-type(1){animation-delay:.02s}.panel:nth-of-type(2){animation-delay:.06s}
-.panel:nth-of-type(3){animation-delay:.10s}.panel:nth-of-type(4){animation-delay:.14s}
-.panel:nth-of-type(5){animation-delay:.18s}.panel:nth-of-type(6){animation-delay:.22s}
+@media (prefers-reduced-motion: reduce){.panel,.kpi,.schip,.hero-card{animation:none}}
 .panel h2{
   font-size:13px;font-weight:700;letter-spacing:.6px;margin-bottom:14px;
-  display:flex;align-items:center;gap:9px;color:var(--sub);text-transform:none;
+  display:flex;align-items:center;gap:9px;color:var(--sub);
 }
 .panel h2 .picon{width:17px;height:17px;stroke:var(--accent);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .panel h2 .hint{font-size:11px;font-weight:400;margin-left:auto;opacity:.75}
@@ -427,16 +453,38 @@ a:hover{text-decoration:underline}
   background:linear-gradient(120deg,var(--accent),var(--violet));
   -webkit-background-clip:text;background-clip:text;color:transparent;
 }
-.zero-state{color:var(--sub);font-size:13.5px;padding:30px 0;text-align:center}
 
 /* ── 版式 ── */
 .grid{display:grid;gap:16px;margin-bottom:16px}
-.g53{grid-template-columns:5fr 3fr}
+.g21{grid-template-columns:2fr 1fr}
 .g35{grid-template-columns:3fr 5fr}
 .g73{grid-template-columns:7fr 5fr}
 .g3{grid-template-columns:1fr 1fr 1fr}
 
-/* ── 到期清单 ── */
+/* ── 今日：行动头条 ── */
+.hero-card{
+  position:relative;border-radius:var(--r);padding:20px 24px;margin-bottom:16px;overflow:hidden;
+  display:flex;align-items:center;gap:22px;flex-wrap:wrap;
+  border:1px solid transparent;
+  background:
+    linear-gradient(var(--card-solid),var(--card-solid)) padding-box,
+    linear-gradient(120deg,var(--accent2),var(--violet) 60%,rgba(255,138,92,.8)) border-box;
+}
+.hero-num{display:flex;flex-direction:column}
+.hero-num b{font-size:44px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.hero-num span{font-size:12px;color:var(--sub);margin-top:4px}
+.hero-mid{display:flex;gap:20px;flex-wrap:wrap;flex:1}
+.hero-item{display:flex;flex-direction:column;gap:2px}
+.hero-item b{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+.hero-item span{font-size:11.5px;color:var(--sub)}
+.hero-item.warn b{color:var(--warn)}
+.hero-item.ok b{color:var(--ok)}
+.hero-tip{
+  font-size:12px;color:var(--sub);border-left:2px solid var(--line);padding-left:14px;max-width:270px;line-height:1.7;
+}
+.hero-tip b{color:var(--ink)}
+
+/* ── 今日：分组清单 ── */
 .chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
 .chip{
   display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:transparent;
@@ -446,31 +494,55 @@ a:hover{text-decoration:underline}
 .chip i{width:7px;height:7px;border-radius:50%;display:inline-block}
 .chip:hover{border-color:var(--accent);color:var(--ink)}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
-.due-list{display:flex;flex-direction:column;max-height:432px;overflow-y:auto;padding-right:6px;scrollbar-width:thin}
+.due-list{display:flex;flex-direction:column;max-height:520px;overflow-y:auto;padding-right:6px;scrollbar-width:thin}
 .due-list::-webkit-scrollbar{width:7px}
 .due-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+.grp{
+  display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;color:var(--sub);
+  letter-spacing:.5px;margin:10px 0 6px;
+}
+.grp:first-child{margin-top:0}
+.grp .picon{width:14px;height:14px;stroke:var(--sub);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.grp.g-over{color:var(--warn)}
+.grp.g-over .picon{stroke:var(--warn)}
 .due{
   display:flex;align-items:center;gap:10px;padding:10px 12px;margin:3px 0;border-radius:12px;
-  border-bottom:1px dashed var(--line2);font-size:13.5px;position:relative;
-  border-left:3px solid var(--sc);
+  font-size:13.5px;border-left:3px solid var(--sc);
   background:linear-gradient(90deg,color-mix(in srgb,var(--sc) 7%,transparent),transparent 55%);
   transition:background .15s ease;
 }
 .due:hover{background:color-mix(in srgb,var(--sc) 12%,transparent)}
-.due:last-child{border-bottom:none}
 .due.is-over{border-left-color:var(--warn)}
+.due.top1{outline:1.5px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:1px}
+.rank-mini{
+  flex:none;width:22px;height:22px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
+  background:var(--track);color:var(--sub);font-size:11px;font-weight:800;
+}
+.due.top1 .rank-mini{background:linear-gradient(135deg,var(--accent),var(--violet));color:#fff}
 .due-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
 .due-main .note{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .tp{font-style:normal;font-size:11.5px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wc{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:8px;padding:1px 7px;white-space:nowrap;opacity:.9}
+.wc.hot{background:var(--warn);color:#fff;border-color:var(--warn);font-weight:700}
 .due-tag{font-size:11.5px;color:var(--sub);white-space:nowrap}
 .due-tag.over{color:var(--warn);font-weight:700}
+.zero-state{color:var(--sub);font-size:13.5px;padding:34px 0;text-align:center}
+
+/* ── 今日：侧栏 ── */
+.side{display:flex;flex-direction:column;gap:16px}
+.mini-stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.schip{padding:13px 15px;border-radius:15px}
+.schip-n{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums}
+.schip-n.t-warn{color:var(--warn)}
+.schip-n.t-ok{color:var(--ok)}
+.schip-l{font-size:11.5px;color:var(--sub);margin-top:2px;display:flex;align-items:center;gap:5px}
+.schip-l .picon{width:13px;height:13px;stroke:var(--sub);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 
 /* ── 图表 ── */
-.donut-wrap{position:relative;width:172px;height:172px;margin:6px auto 8px}
+.donut-wrap{position:relative;width:158px;height:158px;margin:6px auto 8px}
 .donut{width:100%;height:100%;filter:drop-shadow(0 6px 18px rgba(91,124,250,.25))}
 .donut-cap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
-.donut-cap b{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums}
+.donut-cap b{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums}
 .donut-cap small{font-size:11px;color:var(--sub)}
 .legend{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;font-size:12px;color:var(--sub);margin-top:8px}
 .legend .lg{display:inline-flex;align-items:center;gap:5px}
@@ -513,6 +585,9 @@ a:hover{text-decoration:underline}
 .f-row{display:flex;align-items:center;gap:8px}
 .f-row b{margin-left:auto;font-variant-numeric:tabular-nums}
 .f-row small{color:var(--sub);flex:0 0 42px;text-align:right;font-variant-numeric:tabular-nums}
+
+/* ── 复盘：统计条 ── */
+.stat-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:16px}
 
 /* ── 热力图 ── */
 .heat-wrap{display:flex;gap:8px}
@@ -578,28 +653,31 @@ html[data-theme="light"] .p-已掌握{color:#087f5b;background:rgba(12,166,120,.
 }
 .step small{color:var(--sub)}
 
-/* ── 页脚与响应式 ── */
 .foot{color:var(--sub);font-size:11.5px;text-align:center;margin-top:28px;line-height:1.9;opacity:.85}
 @media (max-width:1000px){
-  .hero-grid{grid-template-columns:1fr}
-  .kpis{grid-template-columns:repeat(3,1fr)}
-  .g53,.g35,.g73,.g3{grid-template-columns:1fr}
-  .snap{display:none}
+  .g21,.g35,.g73,.g3{grid-template-columns:1fr}
+  .stat-strip{grid-template-columns:repeat(3,1fr)}
+  .tchips{display:none}
+  .hero-tip{display:none}
 }
-@media (max-width:560px){
+@media (max-width:620px){
   body{padding:0 10px 40px}
-  .kpis{grid-template-columns:repeat(2,1fr)}
-  .brand{font-size:14.5px}
-  .cd-num{font-size:42px}
+  .stat-strip{grid-template-columns:repeat(2,1fr)}
+  .brand{font-size:13.5px}
+  .tab{padding:6px 10px;font-size:12px}
+  .hero-num b{font-size:34px}
+  .tabs{margin-left:8px}
 }
 @media print{
   .aurora,.topbar,.chips{display:none}
+  .view{display:none!important}
+  .view.on{display:block!important}
   body{background:#fff;color:#000;padding-top:16px}
-  .panel,.kpi,.cd-card{box-shadow:none;border:1px solid #ddd;background:#fff;animation:none}
-  .cd-num,.grad-t,.donut-cap b{color:inherit;-webkit-text-fill-color:inherit}
+  .panel,.kpi,.schip,.hero-card{box-shadow:none;border:1px solid #ddd;background:#fff;animation:none}
+  .grad-t,.donut-cap b{color:inherit;-webkit-text-fill-color:inherit}
 }
 @supports not (backdrop-filter: blur(1px)){
-  .panel,.kpi,.topbar{background:var(--card-solid)}
+  .panel,.kpi,.schip,.hero-card,.topbar{background:var(--card-solid)}
 }
 """
 
@@ -612,6 +690,18 @@ _JS = """
     root.dataset.theme=d;
     try{localStorage.setItem('ky-theme',d)}catch(e){}
   });}
+  /* 视图切换（今日/复盘/题库），hash 记忆 */
+  var tabs=document.querySelectorAll('.tab');
+  function show(v){
+    tabs.forEach(function(t){t.classList.toggle('on',t.dataset.v===v)});
+    document.querySelectorAll('.view').forEach(function(x){x.classList.toggle('on',x.id==='v-'+v)});
+    try{history.replaceState(null,'','#'+v)}catch(e){}
+    window.scrollTo({top:0});
+  }
+  tabs.forEach(function(t){t.addEventListener('click',function(){show(t.dataset.v)})});
+  var h=(location.hash||'').replace('#','');
+  show(document.getElementById('v-'+h)?h:'today');
+  /* 到期清单按科目筛选 */
   document.querySelectorAll('.chip').forEach(function(c){
     c.addEventListener('click',function(){
       document.querySelectorAll('.chip').forEach(function(x){x.classList.remove('on')});
@@ -642,62 +732,124 @@ _JS = """
 """
 
 
+def _view_today(d):
+    due = _priority_due(d["due"])
+    st = d["status_counts"]
+    total = d["total"]
+    overdue = d["overdue"]
+    inbox, pending = d["inbox"], d["pending"]
+
+    # 行动头条
+    if due:
+        num_html = f'<b class="count" data-n="{len(due)}">0</b><span>今天该重做</span>'
+        mid = [
+            f'<div class="hero-item{" warn" if overdue else ""}"><b class="count" data-n="{overdue}">0</b><span>逾期</span></div>',
+            f'<div class="hero-item{" warn" if inbox else " ok"}"><b class="count" data-n="{inbox}">0</b><span>收件箱待处理</span></div>',
+            f'<div class="hero-item"><b class="count" data-n="{d["reviewed_today"]}">0</b><span>今日已复习</span></div>',
+            f'<div class="hero-item"><b class="count" data-n="{d["streak"]}">0</b><span>连续学习（天）</span></div>',
+        ]
+        tip = ('<b>从 ① 号开始做</b>——清单已按"逾期最久 → 错过最多 → 到期最早"排好。'
+               '做完把结果告诉 AI（或拍照回传），状态与下次日期自动更新。')
+    else:
+        nxt = next((f for f in d["future"] if f["count"] > 0), None)
+        if nxt:
+            num_html = f'<b class="grad-t">0</b><span>今天没有到期</span>'
+            mid = [f'<div class="hero-item ok"><b>{nxt["label"]}</b><span>下一批到期</span></div>',
+                   f'<div class="hero-item ok"><b class="count" data-n="{nxt["count"]}">0</b><span>届时需重做</span></div>',
+                   f'<div class="hero-item"><b class="count" data-n="{d["streak"]}">0</b><span>连续学习（天）</span></div>']
+            tip = f'下一批在 <b>{html.escape(nxt["label"])}</b>（{nxt["count"]} 道）。可以趁空档说「出重做单」打印一份，或让 AI 统计错因。'
+        else:
+            num_html = '<b class="grad-t">0</b><span>今天没有到期</span>'
+            mid = [f'<div class="hero-item"><b class="count" data-n="{d["streak"]}">0</b><span>连续学习（天）</span></div>']
+            tip = '未来两周暂无到期。新错题录入后 FSRS 会自动排期。'
+        if inbox:
+            mid.append(f'<div class="hero-item warn"><b class="count" data-n="{inbox}">0</b><span>收件箱待处理</span></div>')
+            tip = f'收件箱还有 <b>{inbox} 张</b>待处理——说「处理收件箱」即可归档。' + tip
+    hero = (f'<div class="hero-card"><div class="hero-num">{num_html}</div>'
+            f'<div class="hero-mid">{"".join(mid)}</div>'
+            f'<div class="hero-tip">{tip}</div></div>')
+
+    status_ring = _ring([(s, st[s]) for s in ("未掌握", "复习中", "已掌握") if st[s]],
+                        STATUS_COLORS, total, "道错题")
+    side = (
+        '<div class="side">'
+        '<div class="panel">' + _icon("load") + '<h2>未来 7 天负载</h2>' + _cols(d["future"][:7], today_idx=0) + "</div>"
+        '<div class="panel">' + _icon("ring") + '<h2>学习状态</h2>' + status_ring + "</div>"
+        '<div class="panel">' + _icon("inbox") + '<h2>今日打卡</h2><div class="mini-stats">'
+        + _stat_chip(_icon("flame"), d["streak"], "连续学习（天）")
+        + _stat_chip(_icon("target"), d["reviewed_today"], "已复习（道）")
+        + _stat_chip(_icon("trend"), d["week_new"], "本周新增")
+        + _stat_chip(_icon("brain"), d["knowledge_items"], "知识库条目")
+        + "</div></div></div>")
+
+    main = ('<div class="panel">' + _icon("due")
+            + '<h2>今日该重做 <span class="hint">按轻重缓急排序 · 点题名跳转 Obsidian</span></h2>'
+            + (_due_panel(d["due"]) if due else '<div class="zero-state">🎉 今天没有到期的错题</div>')
+            + "</div>")
+    return f'<div id="v-today" class="view on">{hero}<div class="grid g21">{main}{side}</div></div>'
+
+
+def _view_review(d):
+    st = d["status_counts"]
+    total = d["total"]
+    strip = (
+        '<div class="stat-strip">'
+        + _stat_chip(_icon("target"), total, "错题总数", "")
+        + _stat_chip(_icon("ring"), f'{d["mastery"]:.0f}', "掌握率 %", "ok")
+        + _stat_chip(_icon("trend"), d["week_new"], "本周新增")
+        + _stat_chip(_icon("alert"), d["high3"], "高频错题", "warn" if d["high3"] else "")
+        + _stat_chip(_icon("brain"), d["knowledge_items"], "知识库条目")
+        + "</div>")
+    body = (
+        strip
+        + '<div class="grid g35">'
+        '<div class="panel">' + _icon("target") + "<h2>学习进度</h2>" + _funnel(st, total, d["mastery"]) + "</div>"
+        '<div class="panel">' + _icon("pie") + '<h2>科目分布 <span class="hint">环形 + 状态构成</span></h2>'
+        + _ring(d["subject_counts"], SUBJ_COLORS, total, "道错题")
+        + '<div style="margin-top:14px">' + _stack_rows(d["subject_status"]) + "</div></div></div>"
+        '<div class="grid g73">'
+        '<div class="panel">' + _icon("heat") + '<h2>学习活动热力图 <span class="hint">近 16 周 · 每日新增错题</span></h2>'
+        + _heatmap(d["heatmap"], d["today"]) + "</div>"
+        '<div class="panel">' + _icon("trend") + '<h2>近 8 周新增 <span class="hint">每周错题量</span></h2>'
+        + _sparkline(d["week_trend"]) + "</div></div>"
+        '<div class="grid g3">'
+        '<div class="panel">' + _icon("alert") + "<h2>错因分布</h2>" + _bars(d["error_counts"], _ERROR_COLORS) + "</div>"
+        '<div class="panel">' + _icon("book") + "<h2>哪本书错得最多</h2>" + _bars(d["book_counts"]) + "</div>"
+        '<div class="panel">' + _icon("brain") + "<h2>知识点 Top 10</h2>" + _bars(d["topic_counts"]) + "</div></div>")
+    return f'<div id="v-review" class="view">{body}</div>'
+
+
+def _view_bank(d):
+    body = (
+        '<div class="grid g21">'
+        '<div class="panel">' + _icon("trophy") + '<h2>高频错题榜 <span class="hint">错过 ≥2 次 · 点击题名跳转</span></h2>'
+        + _high_table(d["high"]) + "</div>"
+        '<div class="panel">' + _icon("clock") + "<h2>最近录入</h2>" + _recent_table(d["recent"]) + "</div></div>")
+    return f'<div id="v-bank" class="view">{body}</div>'
+
+
 def render(d):
     total = d["total"]
     st = d["status_counts"]
-    due = d["due"]
-    exam_line = (f'{d["exam_date"]}（估算日期，改 个人配置.md 可更新）' if d["exam_date"]
-                 else "初试日期未配置 · 去 个人配置.md 填一行")
+    exam_line = d["exam_date"] or ""
     days_left = d["days_left"]
-    if days_left is None:
-        cd_num = "—"
-        cd_unit = ""
-    else:
-        cd_num = f'<span class="count" data-n="{max(0, days_left)}">0</span>'
-        cd_unit = "<small>天</small>"
-    streak_txt = f"🔥 连续学习 {d['streak']} 天" if d["streak"] else "今天还没记录 · 从第一张错题开始"
 
-    kpis = "".join([
-        _kpi(total, "错题总数", f"掌握率 {d['mastery']:.0f}%"),
-        _kpi(len(due), "今日到期", f"其中逾期 {d['overdue']} 道" if d["overdue"] else "都还没过期",
-             "warn" if due else "ok"),
-        _kpi(st["未掌握"], "未掌握", "等重做"),
-        _kpi(st["复习中"], "复习中", f"今日已复习 {d['reviewed_today']} 道"),
-        _kpi(st["已掌握"], "已掌握", f"平均复习 {d['avg_reviews']:.1f} 轮"),
-        _kpi(d["week_new"], "本周新增", "周一起算"),
-        _kpi(d["high3"], "高频错题", "错 ≥3 次"),
-        _kpi(d["inbox"], "收件箱积压",
-             f"待确认 {d['pending']} 张" if d["pending"] else ("待 AI 归档" if d["inbox"] else "干净"),
-             "warn" if d["inbox"] else "ok"),
-        _kpi(d["knowledge_items"], "知识库条目", "手册/速记累计"),
-    ])
+    cd_chip = ""
+    if days_left is not None:
+        cd_chip = (f'<span class="tchip cd" title="初试 {html.escape(exam_line)}（估算，改 个人配置.md 更新）">'
+                   f'⏳ 距初试 <b>{max(0, days_left)}</b> 天</span>')
+    streak_chip = f'<span class="tchip fire">🔥 连续 <b>{d["streak"]}</b> 天</span>' if d["streak"] else ""
 
-    if total:
-        body = (
-            '<div class="grid g53">'
-            '<div class="panel">' + _icon("due") + '<h2>今日该重做 <span class="hint">点题名跳转 Obsidian</span></h2>'
-            + _due_panel(due) + "</div>"
-            '<div class="panel">' + _icon("load") + '<h2>未来两周复习负载 <span class="hint">每天到期数</span></h2>'
-            + _cols(d["future"], today_idx=0) + "</div></div>"
-            '<div class="grid g35">'
-            '<div class="panel">' + _icon("target") + "<h2>学习进度</h2>" + _funnel(st, total, d["mastery"]) + "</div>"
-            '<div class="panel">' + _icon("pie") + '<h2>科目分布 <span class="hint">环形 + 状态构成</span></h2>'
-            + _donut(d["subject_counts"], total, "道错题")
-            + '<div style="margin-top:14px">' + _stack_rows(d["subject_status"]) + "</div></div></div>"
-            '<div class="grid g73">'
-            '<div class="panel">' + _icon("heat") + '<h2>学习活动热力图 <span class="hint">近 16 周 · 每日新增错题</span></h2>'
-            + _heatmap(d["heatmap"], d["today"]) + "</div>"
-            '<div class="panel">' + _icon("trend") + '<h2>近 8 周新增 <span class="hint">每周错题量</span></h2>'
-            + _sparkline(d["week_trend"]) + "</div></div>"
-            '<div class="grid g3">'
-            '<div class="panel">' + _icon("alert") + "<h2>错因分布</h2>" + _bars(d["error_counts"], _ERROR_COLORS) + "</div>"
-            '<div class="panel">' + _icon("book") + "<h2>哪本书错得最多</h2>" + _bars(d["book_counts"]) + "</div>"
-            '<div class="panel">' + _icon("brain") + "<h2>知识点 Top 10</h2>" + _bars(d["topic_counts"]) + "</div></div>"
-            '<div class="grid g53">'
-            '<div class="panel">' + _icon("trophy") + '<h2>高频错题榜 <span class="hint">点击题名跳转</span></h2>'
-            + _high_table(d["high"]) + "</div>"
-            '<div class="panel">' + _icon("clock") + "<h2>最近录入</h2>" + _recent_table(d["recent"]) + "</div></div>")
+    due_badge = (f'<span class="badge">{len(d["due"])}</span>' if d["due"] else "")
+    tabs = (f'<nav class="tabs">'
+            f'<button class="tab" data-v="today">今日{due_badge}</button>'
+            f'<button class="tab" data-v="review">复盘</button>'
+            f'<button class="tab" data-v="bank">题库</button></nav>')
+
+    if total or d["inbox"]:
+        body = _view_today(d) + _view_review(d) + _view_bank(d)
     else:
+        tabs = ""
         body = _empty_state()
 
     head_theme = (
@@ -726,17 +878,10 @@ def render(d):
             '<div class="wrap">'
             '<nav class="topbar">'
             f'<div class="brand">{brand_svg}考研错题工作台</div>'
-            f'<div class="snap">星期{d["weekday"]} · {d["today"]} · 数据快照 {d["generated_at"]}<br>'
-            "库维护.py dashboard 生成 · 归档后自动更新</div>"
-            f'<button class="tbtn" id="themeBtn" title="切换深浅色">{sun}{moon} 主题</button></nav>'
-            '<section class="hero-grid">'
-            '<div class="cd-card">'
-            '<div class="cd-label">距 初 试</div>'
-            f'<div class="cd-num">{cd_num}{cd_unit}</div>'
-            f'<div class="cd-date">{html.escape(exam_line)}</div>'
-            f'<div class="cd-foot">{streak_txt}</div></div>'
-            f'<div class="kpis">{kpis}</div></section>'
+            f'<div class="tchips">{cd_chip}{streak_chip}</div>'
+            f'{tabs}'
+            f'<button class="tbtn" id="themeBtn" title="切换深浅色">{sun}{moon}</button></nav>'
             "<main>" + body + "</main>"
-            '<div class="foot">数据全部来自本地错题笔记（错题/ 目录）· 说「刷新工作台」重新生成 · F5 看最新<br>'
-            "复习间隔由 FSRS-4.5 按各题历史计算 · 状态以笔记文件现值为准</div>"
+            f'<div class="foot">星期{d["weekday"]} · {d["today"]} · 生成于 {d["generated_at"]} · '
+            "说「刷新工作台」重新生成 · F5 看最新 · 数据全部来自本地错题笔记</div>"
             "</div><script>" + _JS + "</script></body></html>")
