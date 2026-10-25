@@ -169,6 +169,48 @@ def _sparkline(pairs):
         "</svg>")
 
 
+def _dual_spark(new_pairs, rev_pairs):
+    """新增 vs 复习 两条平滑曲线。"""
+    vals = [p["count"] for p in new_pairs] + [p["count"] for p in rev_pairs]
+    n = len(new_pairs)
+    if n < 2:
+        return '<div class="muted">数据不足</div>'
+    W, H, top, bottom = 560, 170, 28, 36
+    maxv = max(vals) or 1
+
+    def pts(pairs):
+        out = []
+        for i, p in enumerate(pairs):
+            x = 14 + i * ((W - 28) / (n - 1))
+            y = top + (1 - p["count"] / maxv) * (H - top - bottom)
+            out.append((x, y))
+        return out
+
+    def path(pairs, color, ident):
+        ps = pts(pairs)
+        line = _smooth(ps)
+        area = line + f"L{ps[-1][0]:.1f},{H - bottom + 2} L{ps[0][0]:.1f},{H - bottom + 2} Z"
+        dots = "".join(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="var(--card-solid)" stroke="{color}" stroke-width="1.8"/>'
+            for x, y in ps)
+        return (f'<defs><linearGradient id="{ident}" x1="0" y1="0" x2="0" y2="1">'
+                f'<stop offset="0" stop-color="{color}" stop-opacity=".22"/>'
+                f'<stop offset="1" stop-color="{color}" stop-opacity="0"/></linearGradient></defs>'
+                f'<path d="{area}" fill="url(#{ident})"/>'
+                f'<path d="{line}" fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="round"/>{dots}')
+
+    labels = "".join(
+        f'<text x="{x:.1f}" y="{H - 12}" text-anchor="middle" class="sl">{html.escape(new_pairs[i]["label"])}</text>'
+        for i, (x, _y) in enumerate(pts(new_pairs)))
+    return (
+        f'<svg viewBox="0 0 560 170" class="spark" preserveAspectRatio="none">'
+        + path(rev_pairs, "#b08cff", "revG")
+        + path(new_pairs, "#8fb8ff", "newG")
+        + labels + "</svg>"
+        + '<div class="dual-legend"><span><i style="background:#8fb8ff"></i>新增错题</span>'
+          '<span><i style="background:#b08cff"></i>复习次数</span></div>')
+
+
 def _cols(pairs, unit="道", today_idx=None):
     maxc = max((p["count"] for p in pairs), default=0) or 1
     cells = []
@@ -343,6 +385,44 @@ def _funnel(status_counts, total, mastery):
         for s in ("未掌握", "复习中", "已掌握"))
     return (f'<div class="mastery"><b class="grad-t">{mastery:.0f}%</b><span>掌握率</span></div>'
             f'<div class="stack big">{segs}</div><div class="f-rows">{rows}</div>')
+
+
+def _insights_html(d):
+    ins = []
+    if d["worst_subject"]:
+        w = d["worst_subject"]
+        ins.append(("📌", f"最痛科目：<b>{w['subject']}</b>——未掌握 {w['open']} 道，掌握率仅 {w['pct']:.0f}%"))
+    if d["weakest_topic"]:
+        name, pain = d["weakest_topic"]
+        ins.append(("🧠", f"最弱知识点：<b>{html.escape(str(name))}</b>——累计错 {pain} 次"))
+    if d["top_error"]:
+        name, cnt = d["top_error"]
+        ins.append(("⚠️", f"最大错因：<b>{html.escape(str(name))}</b>（{cnt} 道）"))
+    if d["review_ratio"] is not None:
+        r = d["review_ratio"]
+        tone = "复习跟得上录入 ✅" if r >= 1 else "复习追不上新错题 ⚠️"
+        ins.append(("🔁", f"本周复习 {d['week_reviews']} 次 vs 新增 {d['week_new']} 道——<b>{tone}</b>"))
+    advice = []
+    if d["overdue"]:
+        advice.append(f"优先清掉 {d['overdue']} 道逾期题")
+    if d["inbox"]:
+        advice.append(f"收件箱还有 {d['inbox']} 张待归档")
+    if d["worst_subject"]:
+        advice.append(f"把 {d['worst_subject']['subject']} 的未掌握题排进下次重做单")
+    ins.append(("💡", "建议：" + "；".join(advice) if advice else "保持节奏，暂无需要特别处理的事"))
+    return "".join(
+        f'<div class="insight-row"><span class="ib">{ic}</span><span>{txt}</span></div>'
+        for ic, txt in ins)
+
+
+def _msub_html(d):
+    if not d["subj_mastery"]:
+        return '<div class="muted">暂无数据</div>'
+    return "".join(
+        f'<div class="msub-row"><span class="lb">{html.escape(s["subject"])}</span>'
+        f'<span class="tk"><i style="width:{s["pct"]:.0f}%;background:{SUBJ_COLORS.get(s["subject"], "#9d8cff")}"></i></span>'
+        f'<b>{s["pct"]:.0f}%</b><small>{s["done"]}/{s["total"]}</small></div>'
+        for s in d["subj_mastery"])
 
 
 def _stat_chip(icon, num, label, tone=""):
@@ -781,6 +861,35 @@ html[data-theme="light"] .p-复习中{color:#5b3fd0;background:rgba(107,78,219,.
 html[data-theme="light"] .p-已掌握{color:#0a7d5f;background:rgba(15,157,118,.10)}
 .td-date{color:var(--sub);white-space:nowrap;font-variant-numeric:tabular-nums;font-size:11.5px;flex:none}
 
+/* ── v8 实用组件 ── */
+.goal-line{display:flex;align-items:baseline;gap:8px;font-size:12.5px;color:var(--sub)}
+.goal-line b{font-size:24px;font-weight:400;color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.goal-line i{font-style:normal;margin-left:auto;font-size:11px;color:var(--sub)}
+.goal-track{height:8px;border-radius:4px;background:var(--track);margin-top:9px;overflow:hidden}
+.goal-track i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#fff,rgba(255,255,255,.55))}
+html[data-theme="light"] .goal-track i{background:linear-gradient(90deg,#5b3fd0,#8f6bff)}
+.insight{display:grid;grid-template-columns:1.08fr .92fr;gap:30px}
+.insight-list{display:flex;flex-direction:column;gap:11px}
+.insight-row{display:flex;gap:10px;font-size:13px;line-height:1.6;color:var(--ink2)}
+.insight-row .ib{flex:none;width:24px;height:24px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:var(--card2);border:.5px solid var(--line);font-size:12px}
+.insight-row b{color:var(--ink);font-weight:600}
+.msub-row{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:12.5px}
+.msub-row .lb{flex:0 0 48px;font-weight:500;color:var(--ink2)}
+.msub-row .tk{flex:1;height:8px;border-radius:4px;background:var(--track);overflow:hidden}
+.msub-row .tk i{display:block;height:100%;border-radius:4px}
+.msub-row b{flex:0 0 42px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.msub-row small{flex:0 0 52px;text-align:right;color:var(--sub);font-size:10.5px}
+.ach-strip{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:8px}
+.ach{display:flex;align-items:center;gap:7px;padding:8px 13px;border-radius:14px;background:var(--card2);border:.5px solid var(--line);font-size:12px;color:var(--sub)}
+.ach.done{color:var(--ink)}
+.ach .em{font-size:15px;filter:grayscale(1);opacity:.4}
+.ach.done .em{filter:none;opacity:1}
+.ach b{font-weight:600}
+.pillbtn{border:.5px solid var(--line);background:var(--card2);color:var(--ink2);border-radius:999px;padding:4px 12px;font-size:11px;cursor:pointer;font-family:inherit;margin-left:8px}
+.pillbtn:hover{color:var(--ink);background:var(--card-solid)}
+.dual-legend{display:flex;gap:16px;font-size:11px;color:var(--sub);margin-top:8px}
+.dual-legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:6px;vertical-align:2px}
+
 /* ── 空状态 ── */
 .empty-big{text-align:center;padding:70px 20px}
 .empty-svg{width:110px;height:110px;margin-bottom:18px;opacity:.9}
@@ -856,6 +965,15 @@ _JS = """
   show(document.getElementById('v-'+h)?h:'today');
   window.addEventListener('resize',moveThumb);
   setTimeout(moveThumb,120);
+  /* 快捷键：1/2/3 切换视图，T 换主题 */
+  document.addEventListener('keydown',function(e){
+    if(e.target&&/input|textarea/i.test(e.target.tagName))return;
+    var k=(e.key||'').toLowerCase();
+    if(k==='1')show('today');
+    else if(k==='2')show('review');
+    else if(k==='3')show('bank');
+    else if(k==='t'&&btn)btn.click();
+  });
   document.querySelectorAll('.chip').forEach(function(c){
     c.addEventListener('click',function(){
       document.querySelectorAll('.chip').forEach(function(x){x.classList.remove('on')});
@@ -955,6 +1073,12 @@ def _view_today(d):
     wd = "一二三四五六日"[dt.date.fromisoformat(d["today"]).weekday()]
     month, dayn = int(d["today"][5:7]), int(d["today"][8:10])
     mint = f' · 距初试 {max(0, d["days_left"])} 天' if d["days_left"] is not None else ""
+    if d["phase"]:
+        mint += f' · {d["phase"]}阶段'
+    em = d["est_minutes"]
+    est_txt = f"{em} 分钟" if em < 60 else f"{em / 60:.1f} 小时"
+    if due:
+        pills.insert(1, f'<span class="hpill"><b>{est_txt}</b> 预计用时</span>')
     if due:
         greet_h = (f'<b class="count" data-n="{big_num}">0</b> 道题<br>'
                    '<span class="soft">等你重做</span>')
@@ -971,10 +1095,16 @@ def _view_today(d):
     banner = _countdown_banner(d)
 
     status_ring = _focus_ring(st, total, d["mastery"])
+    goal = d["weekly_goal"]
+    gpct = min(100, d["week_reviews"] / goal * 100) if goal else 0
+    goal_card = (f'<div class="goal-line"><b>{d["week_reviews"]}</b><span>/ {goal} 道</span>'
+                 f'<i>{gpct:.0f}%</i></div>'
+                 f'<div class="goal-track"><i style="width:{gpct:.0f}%"></i></div>')
     side = (
         '<div class="side">'
         '<div class="panel">' + '<h2>' + _icon("load") + '未来 7 天负载</h2>' + _cols(d["future"][:7], today_idx=0) + "</div>"
         '<div class="panel">' + '<h2>' + _icon("ring") + '学习状态</h2>' + status_ring + "</div>"
+        '<div class="panel">' + '<h2>' + _icon("target") + '本周目标</h2>' + goal_card + "</div>"
         '<div class="panel">' + '<h2>' + _icon("inbox") + '今日打卡</h2><div class="mini-stats">'
         + _stat_chip(_icon("flame"), d["streak"], "连续学习（天）")
         + _stat_chip(_icon("target"), d["reviewed_today"], "已复习（道）")
@@ -983,7 +1113,8 @@ def _view_today(d):
         + "</div></div></div>")
 
     main = ('<div class="panel">' + '<h2>' + _icon("due")
-            + '今日该重做 <span class="hint">按轻重缓急排序 · 点题名跳转 Obsidian</span></h2>'
+            + '今日该重做 <span class="hint">按轻重缓急排序 · 点题名跳转 Obsidian</span>'
+            '<button class="pillbtn" onclick="window.print()">打印</button></h2>'
             + (_due_panel(d["due"]) if due else '<div class="zero-state">🎉 今天没有到期的错题</div>')
             + "</div>")
     return (f'<div id="v-today" class="view on">'
@@ -1004,6 +1135,10 @@ def _view_review(d):
         + "</div>")
     body = (
         strip
+        + '<div class="panel" style="margin-bottom:20px">' + '<h2>' + _icon("brain") + '本周洞察</h2>'
+        + '<div class="insight"><div class="insight-list">' + _insights_html(d) + "</div>"
+        + '<div><div class="legend" style="justify-content:flex-start;margin:0 0 8px">科目掌握率（越低越该补）</div>'
+        + _msub_html(d) + "</div></div></div>"
         + '<div class="grid g35">'
         '<div class="panel">' + '<h2>' + _icon("target") + "学习进度</h2>" + _funnel(st, total, d["mastery"]) + "</div>"
         '<div class="panel">' + '<h2>' + _icon("pie") + '科目分布 <span class="hint">环形 + 状态构成</span></h2>'
@@ -1012,8 +1147,8 @@ def _view_review(d):
         '<div class="grid g73">'
         '<div class="panel">' + '<h2>' + _icon("heat") + '学习活动热力图 <span class="hint">近 16 周 · 每日新增错题</span></h2>'
         + _heatmap(d["heatmap"], d["today"]) + "</div>"
-        '<div class="panel">' + '<h2>' + _icon("trend") + '近 8 周新增 <span class="hint">每周错题量</span></h2>'
-        + _sparkline(d["week_trend"]) + "</div></div>"
+        '<div class="panel">' + '<h2>' + _icon("trend") + '新增 vs 复习 <span class="hint">近 8 周</span></h2>'
+        + _dual_spark(d["week_trend"], d["review_series"]) + "</div></div>"
         '<div class="grid g3">'
         '<div class="panel">' + '<h2>' + _icon("alert") + "错因分布</h2>" + _bars(d["error_counts"], _ERROR_COLORS) + "</div>"
         '<div class="panel">' + '<h2>' + _icon("book") + "哪本书错得最多</h2>" + _bars(d["book_counts"]) + "</div>"
@@ -1022,7 +1157,11 @@ def _view_review(d):
 
 
 def _view_bank(d):
+    ach = "".join(
+        f'<span class="ach{" done" if a["done"] else ""}"><span class="em">{a["icon"]}</span>'
+        f'<b>{html.escape(a["name"])}</b></span>' for a in d["achievements"])
     body = (
+        '<div class="ach-strip">' + ach + "</div>"
         '<div class="grid g21">'
         '<div class="panel">' + '<h2>' + _icon("trophy") + '高频错题榜 <span class="hint">错过 ≥2 次 · 点击题名跳转</span></h2>'
         + _high_table(d["high"]) + "</div>"
@@ -1086,5 +1225,7 @@ def render(d):
             f'<button class="tbtn" id="themeBtn" title="切换深浅色">{sun}{moon}</button></div></nav>'
             "<main>" + body + "</main>"
             f'<div class="foot">星期{d["weekday"]} · {d["today"]} · 生成于 {d["generated_at"]} · '
-            "说「刷新工作台」重新生成 · F5 看最新 · 数据全部来自本地错题笔记</div>"
+            "说「刷新工作台」重新生成 · F5 看最新 · 数据全部来自本地错题笔记<br>"
+            "快捷键 <span class=\"kbd\">1</span> 今日 <span class=\"kbd\">2</span> 复盘 "
+            "<span class=\"kbd\">3</span> 题库 <span class=\"kbd\">T</span> 换主题</div>"
             "</div><script>" + _JS + "</script></body></html>")

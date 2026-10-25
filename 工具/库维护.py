@@ -393,7 +393,91 @@ def cmd_dashboard(_):
     pend_n = sum(1 for x in pend_dir.iterdir()
                  if x.is_file() and x.name != "说明.md") if pend_dir.exists() else 0
 
+    # ── 实用统计（v8）：复习频次、目标、科目掌握、洞察、成就、健康 ──
+    week_reviews = 0
+    total_reviews = 0
+    wk_rev = {monday - dt.timedelta(weeks=i): 0 for i in range(8)}
+    for _f, p, _t in parsed:
+        rv = p.get("reviews")
+        rv = rv if isinstance(rv, list) else ([rv] if rv else [])
+        for x in rv:
+            dd = date_of(x)
+            if not dd:
+                continue
+            total_reviews += 1
+            if monday <= dd <= TODAY:
+                week_reviews += 1
+            ws = dd - dt.timedelta(days=dd.weekday())
+            if ws in wk_rev:
+                wk_rev[ws] += 1
+    review_series = [{"label": f"{w.month}/{w.day}", "count": c} for w, c in sorted(wk_rev.items())]
+
+    def weekly_goal():
+        cfg = ROOT / "个人配置.md"
+        if not cfg.exists():
+            return 25
+        m = re.search(r"每周复习目标[^\d]*(\d+)",
+                      cfg.read_text(encoding="utf-8", errors="replace"))
+        return max(1, int(m.group(1))) if m else 25
+
+    week_new = week_trend[-1]["count"] if week_trend else 0
+    goal = weekly_goal()
+
+    subj_mastery = []
+    for subj, counts in subject_status.items():
+        tot = sum(counts.values())
+        if tot:
+            subj_mastery.append({"subject": subj, "total": tot,
+                                 "done": counts["已掌握"], "open": counts["未掌握"],
+                                 "pct": counts["已掌握"] / tot * 100})
+    subj_mastery.sort(key=lambda x: (x["pct"], -x["open"]))
+
+    topic_pain = {}
+    for _f, p, _t in parsed:
+        tv = p.get("topic")
+        tl = [t for t in (tv if isinstance(tv, list) else [tv]) if t]
+        for t in tl:
+            topic_pain[t] = topic_pain.get(t, 0) + _as_int(p.get("wrong_count"))
+    topic_pain_top = sorted(topic_pain.items(), key=lambda kv: -kv[1])[:5]
+
+    min_map = {"数学": 8, "英语": 4, "政治": 5, "专业课": 10}
+    est_minutes = sum(min_map.get(x["subject"], 6) for x in due)
+
+    worst_subject = max((s for s in subj_mastery if s["open"]), key=lambda x: x["open"], default=None)
+    weakest_topic = topic_pain_top[0] if topic_pain_top else None
+    top_error = sorted(error_counts.items(), key=lambda kv: -kv[1])[0] if error_counts else None
+    review_ratio = (week_reviews / week_new) if week_new else None
+
+    achievements = [
+        {"icon": "🌱", "name": "开张", "done": total >= 1},
+        {"icon": "🔥", "name": "连续 7 天", "done": streak >= 7},
+        {"icon": "💯", "name": "百次复习", "done": total_reviews >= 100},
+        {"icon": "🎯", "name": "掌握 25 题", "done": status_counts["已掌握"] >= 25},
+        {"icon": "📥", "name": "收件箱清零", "done": total >= 1 and inbox_n == 0 and pend_n == 0},
+        {"icon": "⚡", "name": f"本周 ≥{goal}", "done": week_reviews >= goal},
+    ]
+
+    health_issues = 0
+    valid_status = {"未掌握", "复习中", "已掌握"}
+    for _f, p, _t in parsed:
+        if (p.get("subject") not in SUBJECTS or p.get("error") not in ERRORS
+                or p.get("status") not in valid_status):
+            health_issues += 1
+            continue
+        nr2, d0 = date_of(p.get("next_review")), date_of(p.get("date"))
+        if nr2 is None or (d0 and nr2 < d0):
+            health_issues += 1
+
     exam = _exam_date()
+    days_left_v = (exam - TODAY).days if exam else None
+    if days_left_v is None:
+        phase = ""
+    elif days_left_v > 240:
+        phase = "基础"
+    elif days_left_v > 90:
+        phase = "强化"
+    else:
+        phase = "冲刺"
     data = {
         "generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "today": today_s,
@@ -421,8 +505,21 @@ def cmd_dashboard(_):
         "knowledge_items": knowledge_items,
         "avg_reviews": (sum(len(p.get("reviews") or []) for _f, p, _t in parsed) / total) if total else 0,
         "high3": sum(1 for _f, p, _t in parsed if _as_int(p.get("wrong_count")) >= 3),
-        "week_new": week_trend[-1]["count"] if week_trend else 0,
+        "week_new": week_new,
         "mastery": (status_counts["已掌握"] / total * 100) if total else 0,
+        "week_reviews": week_reviews,
+        "total_reviews": total_reviews,
+        "weekly_goal": goal,
+        "review_series": review_series,
+        "subj_mastery": subj_mastery,
+        "weakest_topic": weakest_topic,
+        "worst_subject": worst_subject,
+        "top_error": top_error,
+        "review_ratio": review_ratio,
+        "est_minutes": est_minutes,
+        "achievements": achievements,
+        "health_issues": health_issues,
+        "phase": phase,
     }
     page = render(data)
     out = ROOT / "工作台.html"
