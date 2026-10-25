@@ -461,6 +461,50 @@ a:hover{text-decoration:underline}
 .g73{grid-template-columns:7fr 5fr}
 .g3{grid-template-columns:1fr 1fr 1fr}
 
+/* ── 今日：倒计时横幅（翻牌钟） ── */
+.cd-banner{
+  position:relative;border-radius:var(--r);margin-bottom:16px;padding:24px 30px 20px;overflow:hidden;
+  background:linear-gradient(130deg,#3d4fd0 0%,#6d5df0 46%,#a35cf0 100%);
+  color:#fff;box-shadow:0 24px 55px rgba(80,70,220,.38);
+}
+.cd-banner::before{
+  content:"";position:absolute;right:-60px;top:-80px;width:260px;height:260px;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,.18),transparent 60%);
+}
+.cd-banner::after{
+  content:"";position:absolute;left:-70px;bottom:-110px;width:240px;height:240px;border-radius:50%;
+  background:radial-gradient(circle,rgba(43,212,160,.25),transparent 62%);
+}
+.cd-row{display:flex;align-items:center;gap:30px;flex-wrap:wrap;position:relative;z-index:1}
+.cd-kicker{font-size:10.5px;letter-spacing:3.5px;opacity:.8;margin-bottom:8px;font-weight:600}
+.cd-digits{display:flex;align-items:center;gap:7px}
+.flip{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:.64em;height:1.06em;font-size:80px;font-weight:800;
+  background:linear-gradient(180deg,#2b3149 0%,#1d2237 47%,#191d30 53%,#131728 100%);
+  border-radius:.085em;position:relative;font-variant-numeric:tabular-nums;
+  box-shadow:0 8px 22px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.14);
+  animation:flipin .65s cubic-bezier(.2,.75,.25,1) backwards;
+  transform-origin:50% 50%;
+}
+.flip::before{content:"";position:absolute;left:5%;right:5%;top:calc(50% - 1px);height:2px;background:rgba(0,0,0,.5);z-index:1}
+@keyframes flipin{from{transform:rotateX(-92deg);opacity:0}62%{transform:rotateX(14deg);opacity:1}to{transform:none}}
+@media (prefers-reduced-motion: reduce){.flip{animation:none}}
+.cd-unit{font-size:22px;font-weight:700;opacity:.92;margin-left:4px}
+.cd-info{margin-left:auto;text-align:right}
+.cd-date{font-size:17px;font-weight:800;letter-spacing:.5px}
+.cd-wd{font-size:12px;font-weight:600;opacity:.85;margin-left:8px;padding:2px 9px;border-radius:999px;background:rgba(255,255,255,.16)}
+.cd-sub{font-size:11.5px;opacity:.75;margin-top:5px}
+.cd-equiv{font-size:13px;opacity:.95;margin-top:8px}
+.cd-equiv b{font-size:16px;font-weight:800}
+.ms-track{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;position:relative;z-index:1}
+.ms{font-size:11.5px;padding:4.5px 12px;border-radius:999px;background:rgba(255,255,255,.13);font-variant-numeric:tabular-nums}
+.ms.past{opacity:.5}
+.ms.fut{opacity:.75}
+.ms.on{background:#fff;color:#4338ca;font-weight:800;box-shadow:0 0 18px rgba(255,255,255,.5)}
+.ms-gap{margin-left:7px;opacity:.8;font-weight:600}
+.cd-empty{font-size:14px;text-align:center;padding:16px 0;opacity:.92}
+
 /* ── 今日：行动头条 ── */
 .hero-card{
   position:relative;border-radius:var(--r);padding:20px 24px;margin-bottom:16px;overflow:hidden;
@@ -667,6 +711,9 @@ html[data-theme="light"] .p-已掌握{color:#087f5b;background:rgba(12,166,120,.
   .tab{padding:6px 10px;font-size:12px}
   .hero-num b{font-size:34px}
   .tabs{margin-left:8px}
+  .flip{font-size:54px}
+  .cd-info{margin-left:0;text-align:left}
+  .cd-row{gap:16px}
 }
 @media print{
   .aurora,.topbar,.chips{display:none}
@@ -732,6 +779,45 @@ _JS = """
 """
 
 
+def _countdown_banner(d):
+    """今日视图顶部：大号翻牌钟倒计时 + 里程碑轨道。"""
+    days, exam = d["days_left"], d["exam_date"]
+    if days is None or exam is None:
+        return ('<div class="cd-banner"><div class="cd-empty">⏳ 去 个人配置.md 填一行「初试日期」——'
+                "这里会变成大号倒计时翻牌钟</div></div>")
+    days = max(0, days)
+    wd = "一二三四五六日"[dt.date.fromisoformat(exam).weekday()]
+    digits = "".join(
+        f'<span class="flip" style="animation-delay:{0.1 + 0.12 * i:.2f}s">{ch}</span>'
+        for i, ch in enumerate(str(days)))
+    weeks, rdays = divmod(days, 7)
+    months = round(days / 30.44)
+    ms = [500, 400, 300, 200, 100, 50, 30]
+    nxt = max((m for m in ms if m <= days), default=None)
+    chips = []
+    for m in ms:
+        if m > days:
+            chips.append(f'<span class="ms past">✓ {m}</span>')
+        elif m == nxt:
+            gap = days - m
+            chips.append(f'<span class="ms on">● {m} 天<span class="ms-gap">'
+                         f'{"今天！" if gap == 0 else f"还有 {gap} 天"}</span></span>')
+        else:
+            chips.append(f'<span class="ms fut">{m}</span>')
+    return (
+        '<div class="cd-banner">'
+        '<div class="cd-row">'
+        '<div class="cd-left"><div class="cd-kicker">DISTANCE TO GOAL · 距初试</div>'
+        f'<div class="cd-digits">{digits}<span class="cd-unit">天</span></div></div>'
+        '<div class="cd-info">'
+        f'<div class="cd-date">{exam}<span class="cd-wd">周{wd}</span></div>'
+        '<div class="cd-sub">暂按往年规律估算 · 官方公布后改 个人配置.md 一行即可</div>'
+        f'<div class="cd-equiv">≈ <b>{months}</b> 个月 · <b>{weeks}</b> 周 <b>+{rdays}</b> 天</div>'
+        "</div></div>"
+        f'<div class="ms-track">{"".join(chips)}</div>'
+        "</div>")
+
+
 def _view_today(d):
     due = _priority_due(d["due"])
     st = d["status_counts"]
@@ -768,6 +854,7 @@ def _view_today(d):
     hero = (f'<div class="hero-card"><div class="hero-num">{num_html}</div>'
             f'<div class="hero-mid">{"".join(mid)}</div>'
             f'<div class="hero-tip">{tip}</div></div>')
+    banner = _countdown_banner(d)
 
     status_ring = _ring([(s, st[s]) for s in ("未掌握", "复习中", "已掌握") if st[s]],
                         STATUS_COLORS, total, "道错题")
@@ -786,7 +873,7 @@ def _view_today(d):
             + '<h2>今日该重做 <span class="hint">按轻重缓急排序 · 点题名跳转 Obsidian</span></h2>'
             + (_due_panel(d["due"]) if due else '<div class="zero-state">🎉 今天没有到期的错题</div>')
             + "</div>")
-    return f'<div id="v-today" class="view on">{hero}<div class="grid g21">{main}{side}</div></div>'
+    return f'<div id="v-today" class="view on">{banner}{hero}<div class="grid g21">{main}{side}</div></div>'
 
 
 def _view_review(d):
@@ -832,12 +919,6 @@ def render(d):
     total = d["total"]
     st = d["status_counts"]
     exam_line = d["exam_date"] or ""
-    days_left = d["days_left"]
-
-    cd_chip = ""
-    if days_left is not None:
-        cd_chip = (f'<span class="tchip cd" title="初试 {html.escape(exam_line)}（估算，改 个人配置.md 更新）">'
-                   f'⏳ 距初试 <b>{max(0, days_left)}</b> 天</span>')
     streak_chip = f'<span class="tchip fire">🔥 连续 <b>{d["streak"]}</b> 天</span>' if d["streak"] else ""
 
     due_badge = (f'<span class="badge">{len(d["due"])}</span>' if d["due"] else "")
@@ -850,7 +931,7 @@ def render(d):
         body = _view_today(d) + _view_review(d) + _view_bank(d)
     else:
         tabs = ""
-        body = _empty_state()
+        body = _countdown_banner(d) + _empty_state()
 
     head_theme = (
         "<script>(function(){try{var t=localStorage.getItem('ky-theme')||"
@@ -878,7 +959,7 @@ def render(d):
             '<div class="wrap">'
             '<nav class="topbar">'
             f'<div class="brand">{brand_svg}考研错题工作台</div>'
-            f'<div class="tchips">{cd_chip}{streak_chip}</div>'
+            f'<div class="tchips">{streak_chip}</div>'
             f'{tabs}'
             f'<button class="tbtn" id="themeBtn" title="切换深浅色">{sun}{moon}</button></nav>'
             "<main>" + body + "</main>"
