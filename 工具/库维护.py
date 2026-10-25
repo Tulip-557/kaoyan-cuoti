@@ -272,59 +272,7 @@ def cmd_check_agents(_):
         print("  ✓ 在目标范围内")
 
 
-# ── 工作台（dashboard）：从错题笔记生成单文件 HTML 仪表盘 ──────────────────
-_DASH_CSS = """
-:root{--bg:#f5f6f8;--card:#fff;--ink:#1f2430;--sub:#6b7280;--line:#e5e7eb;--accent:#4c6ef5;--warn:#e8590c}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:24px 16px 48px}
-.wrap{max-width:1080px;margin:0 auto}
-h1{font-size:22px;margin-bottom:4px}
-.meta{color:var(--sub);font-size:13px;margin-bottom:20px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:12px;margin-bottom:20px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.card .n{font-size:26px;font-weight:700}
-.card .t{font-size:12px;color:var(--sub);margin-top:2px}
-.card.warn .n{color:var(--warn)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px}
-.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
-.panel h2{font-size:15px;margin-bottom:12px}
-.row{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px}
-.row .lb{flex:0 0 118px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
-.row .bar{flex:1;background:#eef0f3;border-radius:5px;height:10px;overflow:hidden}
-.row .bar i{display:block;height:10px;border-radius:5px}
-.row b{flex:0 0 34px;text-align:right;color:var(--sub);font-weight:600}
-.donut{width:150px;height:150px;border-radius:50%;margin:6px auto;position:relative}
-.donut::after{content:"";position:absolute;inset:26%;background:var(--card);border-radius:50%}
-.donut .cap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1;font-weight:700}
-.cap small{font-weight:400;color:var(--sub);font-size:11px}
-.leg{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;font-size:12px;color:var(--sub);margin-top:8px}
-.leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
-.cols{display:flex;align-items:flex-end;gap:6px;height:110px}
-.cols .c{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end}
-.cols .c i{display:block;width:70%;background:var(--accent);border-radius:3px 3px 0 0;min-height:2px}
-.cols .c.today i{background:var(--warn)}
-.cols .c em{font-style:normal;font-size:10px;color:var(--sub);white-space:nowrap}
-.list{font-size:13px}
-.list .it{display:flex;gap:8px;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--line)}
-.list .it:last-child{border:none}
-.tag{font-size:11px;padding:1px 7px;border-radius:10px;white-space:nowrap}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
-th{color:var(--sub);font-weight:600}
-.empty{text-align:center;padding:40px 0;color:var(--sub);line-height:1.9}
-.empty b{font-size:17px;color:var(--ink)}
-.foot{color:var(--sub);font-size:12px;margin-top:22px;text-align:center}
-.over{color:var(--warn)}
-"""
-
-SUBJ_COLORS = {"数学": "#4c6ef5", "英语": "#2f9e6e", "政治": "#e8a33d", "专业课": "#9a5fd0"}
-_ERROR_COLORS = {"概念不清": "#4c6ef5", "条件误用": "#2f9e6e", "公式记错": "#e8a33d", "计算失误": "#9a5fd0",
-                 "思路不会": "#e8590c", "审题失误": "#0ca678", "知识盲区": "#f76707", "表达问题": "#5c7cfa",
-                 "时间不够": "#8a94a6", "待确认": "#adb5bd"}
-
-
+# ── 工作台：扫描库数据，交给 dashboard.py 渲染（渲染与数据分离）─────────────
 def _as_int(v, default=0):
     try:
         return int(v)
@@ -332,190 +280,156 @@ def _as_int(v, default=0):
         return default
 
 
-def _topic_str(v):
-    return "、".join(v) if isinstance(v, list) else (v or "")
-
-
-def _ob_link(path, text):
-    from urllib.parse import quote
-    href = "obsidian://open?vault=%E8%80%83%E7%A0%94&file=" + quote(
-        str(path.relative_to(ROOT)).replace("\\", "/"))
-    return f'<a href="{href}">{html.escape(text)}</a>'
-
-
-def _bars(dist, colors=None):
-    maxc = max((c for _l, c in dist), default=0)
-    out = []
-    for label, count in dist:
-        color = (colors or {}).get(label, "#748ffc")
-        w = int(count / maxc * 100) if maxc else 0
-        esc = html.escape(str(label))
-        out.append(f'<div class="row"><span class="lb" title="{esc}">{esc}</span>'
-                   f'<span class="bar"><i style="width:{w}%;background:{color}"></i></span>'
-                   f'<b>{count}</b></div>')
-    return ("".join(out) if out else
-            '<div class="row"><span class="lb">（暂无）</span><span class="bar"></span><b>0</b></div>')
-
-
-def _donut(dist, total, cap):
-    stops, acc = [], 0.0
-    for label, count in dist:
-        pct = count / total * 100 if total else 0
-        color = SUBJ_COLORS.get(label, "#8a94a6")
-        stops.append(f"{color} {acc:.1f}% {acc + pct:.1f}%")
-        acc += pct
-    grad = ",".join(stops) if stops else "#dee2e6 0% 100%"
-    leg = "".join(
-        f'<span><i style="background:{SUBJ_COLORS.get(l, "#8a94a6")}"></i>{html.escape(str(l))} {c}</span>'
-        for l, c in dist) or "<span>（暂无）</span>"
-    return (f'<div class="donut" style="background:conic-gradient({grad})">'
-            f'<div class="cap">{total}<small>{cap}</small></div></div><div class="leg">{leg}</div>')
-
-
-def _cols_chart(pairs, today_idx=None):
-    maxc = max((c for _l, c in pairs), default=0)
-    out = []
-    for i, (label, count) in enumerate(pairs):
-        h = 6 + (count / maxc * 96 if maxc else 0)
-        cls = ' class="today"' if today_idx is not None and i == today_idx else ""
-        out.append(f'<div class="c"{cls}><i style="height:{h:.0f}px"></i>'
-                   f'<em>{html.escape(str(label))}</em></div>')
-    return '<div class="cols">' + "".join(out) + "</div>"
+def _exam_date():
+    cfg = ROOT / "个人配置.md"
+    if not cfg.exists():
+        return None
+    m = re.search(r"初试日期[^\d]*(\d{4})-(\d{1,2})-(\d{1,2})",
+                  cfg.read_text(encoding="utf-8", errors="replace"))
+    if not m:
+        return None
+    try:
+        return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
 
 
 def cmd_dashboard(_):
-    notes = [(f, p) for f, p, _t in error_notes()]
-    total = len(notes)
+    from dashboard import render
+    parsed = list(error_notes())
+    total = len(parsed)
+    today_s = TODAY.isoformat()
 
-    def dist(key):
-        d = {}
-        for _f, p in notes:
-            v = p.get(key) or "（空）"
-            d[v] = d.get(v, 0) + 1
-        return sorted(d.items(), key=lambda x: -x[1])
+    def rel(f):
+        return str(f.relative_to(ROOT)).replace("\\", "/")
 
-    subjects, errors, books, statuses = dist("subject"), dist("error"), dist("book"), dist("status")
-    st = dict(statuses)
-    topics = {}
-    for _f, p in notes:
-        for t in (p.get("topic") if isinstance(p.get("topic"), list) else [p.get("topic")]):
-            if t:
-                topics[t] = topics.get(t, 0) + 1
-    top_topics = sorted(topics.items(), key=lambda x: -x[1])[:10]
+    status_counts = {"未掌握": 0, "复习中": 0, "已掌握": 0}
+    subject_status, subject_counts = {}, {}
+    error_counts, book_counts, topic_counts = {}, {}, {}
+    due, high, recent = [], [], []
+    note_days, review_days, reviewed_today = {}, set(), 0
 
-    due_list = []
-    for f, p in notes:
-        nr = date_of(p.get("next_review"))
-        if nr and nr <= TODAY and p.get("status") != "已掌握":
-            due_list.append((nr, p.get("subject", "?"), f, p))
-    due_list.sort(key=lambda x: (x[0], x[2].name))
-    high = sorted((n for n in notes if _as_int(n[1].get("wrong_count")) >= 2),
-                  key=lambda x: -_as_int(x[1].get("wrong_count")))[:10]
+    for f, p, _t in parsed:
+        st = p.get("status") or ""
+        subj = p.get("subject") or "其它"
+        if st in status_counts:
+            status_counts[st] += 1
+        subject_counts[subj] = subject_counts.get(subj, 0) + 1
+        subject_status.setdefault(subj, {"未掌握": 0, "复习中": 0, "已掌握": 0})
+        if st in subject_status[subj]:
+            subject_status[subj][st] += 1
+        err = p.get("error") or "（空）"
+        error_counts[err] = error_counts.get(err, 0) + 1
+        bk = p.get("book") or "（空）"
+        book_counts[bk] = book_counts.get(bk, 0) + 1
+        tv = p.get("topic")
+        tl = [t for t in (tv if isinstance(tv, list) else [tv]) if t]
+        for t in tl:
+            topic_counts[t] = topic_counts.get(t, 0) + 1
+        wc = _as_int(p.get("wrong_count"))
+        nr, d = date_of(p.get("next_review")), date_of(p.get("date"))
+        if nr and nr <= TODAY and st != "已掌握":
+            due.append({"subject": subj, "file": rel(f), "stem": f.stem,
+                        "topic": "、".join(tl), "due": nr.isoformat(),
+                        "overdue": (TODAY - nr).days, "wrong_count": wc, "status": st})
+        if wc >= 2:
+            high.append({"file": rel(f), "stem": f.stem, "subject": subj,
+                         "topic": "、".join(tl), "wrong_count": wc, "status": st})
+        if d:
+            note_days[d.isoformat()] = note_days.get(d.isoformat(), 0) + 1
+            recent.append({"file": rel(f), "stem": f.stem, "subject": subj,
+                           "topic": "、".join(tl), "date": d.isoformat(), "status": st})
+        rv = p.get("reviews")
+        rv = rv if isinstance(rv, list) else ([rv] if rv else [])
+        for x in rv:
+            dd = date_of(x)
+            if dd:
+                review_days.add(dd.isoformat())
+                if dd == TODAY:
+                    reviewed_today += 1
+
+    due.sort(key=lambda x: x["due"])
+    high.sort(key=lambda x: -x["wrong_count"])
+    recent.sort(key=lambda x: x["date"], reverse=True)
+    recent = recent[:10]
 
     monday = TODAY - dt.timedelta(days=TODAY.weekday())
     wk = {monday - dt.timedelta(weeks=i): 0 for i in range(8)}
-    for _f, p in notes:
-        d = date_of(p.get("date"))
-        if d:
-            ws = d - dt.timedelta(days=d.weekday())
-            if ws in wk:
-                wk[ws] += 1
-    week_pairs = [(f"{w.month}/{w.day}", c) for w, c in sorted(wk.items())]
-    new_this_week = wk.get(monday, 0)
+    for iso, c in note_days.items():
+        d = date_of(iso)
+        ws = d - dt.timedelta(days=d.weekday())
+        if ws in wk:
+            wk[ws] += c
+    week_trend = [{"label": f"{w.month}/{w.day}", "count": c} for w, c in sorted(wk.items())]
 
     fut = {TODAY + dt.timedelta(days=i): 0 for i in range(14)}
-    for _f, p in notes:
+    for _f, p, _t in parsed:
         nr = date_of(p.get("next_review"))
         if nr in fut and p.get("status") != "已掌握":
             fut[nr] += 1
-    fut_pairs = [(("今天" if i == 0 else f"{d.month}/{d.day}"), c)
-                 for i, (d, c) in enumerate(sorted(fut.items()))]
+    future = [{"label": "今天" if i == 0 else f"{d.month}/{d.day}", "count": c, "today": i == 0}
+              for i, (d, c) in enumerate(sorted(fut.items()))]
+
+    activity = set(note_days) | review_days
+    streak, cursor = 0, TODAY
+    if cursor.isoformat() not in activity:
+        cursor -= dt.timedelta(days=1)
+    while cursor.isoformat() in activity:
+        streak += 1
+        cursor -= dt.timedelta(days=1)
+
+    knowledge_items = 0
+    kp_dir = ROOT / "知识点"
+    if kp_dir.exists():
+        for mf in kp_dir.glob("*.md"):
+            for line in mf.read_text(encoding="utf-8", errors="replace").splitlines():
+                s = line.strip()
+                if s.startswith("- ") and "（暂无）" not in s:
+                    knowledge_items += 1
 
     inbox_n = sum(1 for x in (ROOT / "收件箱").iterdir()
                   if x.is_file() and x.name != "说明.md") if (ROOT / "收件箱").exists() else 0
     pend_dir = ROOT / "收件箱" / "待确认"
     pend_n = sum(1 for x in pend_dir.iterdir()
                  if x.is_file() and x.name != "说明.md") if pend_dir.exists() else 0
-    last_date = max((date_of(p.get("date")) for _f, p in notes if date_of(p.get("date"))), default=None)
 
-    cards = [
-        (total, "错题总数", False), (st.get("未掌握", 0), "未掌握", False),
-        (st.get("复习中", 0), "复习中", False), (st.get("已掌握", 0), "已掌握", False),
-        (len(due_list), "今日到期", bool(due_list)), (new_this_week, "本周新增", False),
-        (sum(1 for _f, p in notes if _as_int(p.get("wrong_count")) >= 3), "高频错题", False),
-        (inbox_n, f"收件箱积压{f'（含待确认 {pend_n}）' if pend_n else ''}", bool(inbox_n)),
-    ]
-    cards_html = "".join(
-        f'<div class="card{" warn" if w else ""}"><div class="n">{n}</div>'
-        f'<div class="t">{html.escape(t)}</div></div>' for n, t, w in cards)
-
-    if due_list:
-        items = []
-        for nr, subj, f, p in due_list[:20]:
-            over = ' class="over"' if nr < TODAY else ""
-            color = SUBJ_COLORS.get(subj, "#4c6ef5")
-            items.append(
-                f'<div class="it"><span class="tag" style="background:{color}1e;color:{color}">'
-                f'{html.escape(str(subj))}</span><span>{_ob_link(f, f.stem)}</span>'
-                f'<span style="color:var(--sub);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-                f'{html.escape(_topic_str(p.get("topic")))}</span>'
-                f'<span{over}>{"逾期 " if nr < TODAY else ""}{nr.month}/{nr.day}</span></div>')
-        tail = (f'<div class="it" style="color:var(--sub)">… 共 {len(due_list)} 道</div>'
-                if len(due_list) > 20 else "")
-        today_html = '<div class="list">' + "".join(items) + tail + "</div>"
-    else:
-        today_html = '<div class="empty">今天没有到期的错题 🎉</div>'
-
-    if high:
-        rows = "".join(
-            f"<tr><td>{_ob_link(f, f.stem)}</td><td>{html.escape(str(p.get('subject', '')))}</td>"
-            f"<td>{html.escape(_topic_str(p.get('topic')))}</td>"
-            f"<td>{_as_int(p.get('wrong_count'))}</td><td>{html.escape(str(p.get('status', '')))}</td></tr>"
-            for f, p in high)
-        high_html = ("<table><tr><th>题目</th><th>科目</th><th>知识点</th><th>错次</th><th>状态</th></tr>"
-                     + rows + "</table>")
-    else:
-        high_html = '<div class="empty">还没有错过 2 次以上的题</div>'
-
-    if total:
-        body = (
-            '<div class="cards">' + cards_html + "</div>"
-            + '<div class="grid"><div class="panel"><h2>今日该重做（' + str(len(due_list)) + "）</h2>"
-            + today_html + '</div><div class="panel"><h2>科目分布</h2>'
-            + _donut(subjects, total, "道错题") + "</div></div>"
-            + '<div class="grid"><div class="panel"><h2>未来两周复习负载</h2>'
-            + _cols_chart(fut_pairs, today_idx=0)
-            + '</div><div class="panel"><h2>近 8 周新增错题</h2>'
-            + _cols_chart(week_pairs) + "</div></div>"
-            + '<div class="grid"><div class="panel"><h2>错因分布</h2>'
-            + _bars(errors, _ERROR_COLORS)
-            + '</div><div class="panel"><h2>哪本书错得最多</h2>'
-            + _bars(books) + "</div></div>"
-            + '<div class="grid"><div class="panel"><h2>知识点 Top 10</h2>'
-            + _bars(top_topics)
-            + '</div><div class="panel"><h2>高频错题榜（错 ≥2 次）</h2>'
-            + high_html + "</div></div>")
-    else:
-        body = ('<div class="cards">' + cards_html + "</div>"
-                + '<div class="panel"><div class="empty">📷<b>还没有任何错题数据</b><br>'
-                "拍照发给 AI 工具（或丢进 收件箱/），归档后这里就会亮起来。<br>"
-                "随时说一句「刷新工作台」重新生成本页面。</div></div>")
-
-    last = f"最近录入：{last_date.isoformat()}" if last_date else "尚未录入"
-    page = ('<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            "<title>考研错题工作台</title><style>" + _DASH_CSS + "</style></head>"
-            '<body><div class="wrap"><h1>考研错题工作台</h1>'
-            f'<div class="meta">数据快照 {TODAY.isoformat()} · {last} · '
-            "由 工具/库维护.py dashboard 生成 · 随归档自动刷新</div>"
-            + body
-            + '<div class="foot">点题目可跳转到 Obsidian 笔记 · 数据全部来自本地错题笔记</div>'
-            "</div></body></html>")
+    exam = _exam_date()
+    data = {
+        "generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "today": today_s,
+        "weekday": "一二三四五六日"[TODAY.weekday()],
+        "exam_date": exam.isoformat() if exam else None,
+        "days_left": (exam - TODAY).days if exam else None,
+        "total": total,
+        "status_counts": status_counts,
+        "subject_status": subject_status,
+        "subject_counts": sorted(subject_counts.items(), key=lambda x: -x[1]),
+        "error_counts": sorted(error_counts.items(), key=lambda x: -x[1]),
+        "book_counts": sorted(book_counts.items(), key=lambda x: -x[1]),
+        "topic_counts": sorted(topic_counts.items(), key=lambda x: -x[1])[:10],
+        "due": due,
+        "overdue": sum(1 for x in due if x["overdue"] > 0),
+        "high": high[:10],
+        "recent": recent,
+        "week_trend": week_trend,
+        "future": future,
+        "heatmap": note_days,
+        "streak": streak,
+        "inbox": inbox_n,
+        "pending": pend_n,
+        "reviewed_today": reviewed_today,
+        "knowledge_items": knowledge_items,
+        "avg_reviews": (sum(len(p.get("reviews") or []) for _f, p, _t in parsed) / total) if total else 0,
+        "high3": sum(1 for _f, p, _t in parsed if _as_int(p.get("wrong_count")) >= 3),
+        "week_new": week_trend[-1]["count"] if week_trend else 0,
+        "mastery": (status_counts["已掌握"] / total * 100) if total else 0,
+    }
+    page = render(data)
     out = ROOT / "工作台.html"
     out.write_text(page, encoding="utf-8")
     print(f"工作台已生成：{out}")
-    print(f"快照：错题 {total} · 未掌握 {st.get('未掌握', 0)} · 复习中 {st.get('复习中', 0)}"
-          f" · 已掌握 {st.get('已掌握', 0)} · 今日到期 {len(due_list)} · 收件箱 {inbox_n}")
+    print(f"快照：错题 {total} · 未掌握 {status_counts['未掌握']} · 复习中 {status_counts['复习中']}"
+          f" · 已掌握 {status_counts['已掌握']} · 今日到期 {len(due)} · 收件箱 {inbox_n}")
 
 
 def main():
