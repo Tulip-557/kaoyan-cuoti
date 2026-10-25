@@ -10,13 +10,20 @@ AI 在会话开场、统计类请求、更新重做调度时优先调用本脚�
   python 工具/库维护.py fsrs --history "2026-10-01:3,2026-10-05:1" --rating 3
   python 工具/库维护.py check-agents                          # AGENTS.md 字符数检查
   python 工具/库维护.py dashboard                             # 生成 工作台.html 本地仪表盘
+  python 工具/库维护.py pull                                  # 从坚果云 WebDAV 拉取手机上传的图到 收件箱/
+  python 工具/库维护.py push                                  # 把 附件/ 新图上传回坚果云做云端备份
+  python 工具/库维护.py weekly                                # 生成本周周报到 重做单/
 """
 import argparse
-import html
+import base64
 import datetime as dt
+import html
 import math
 import re
 import sys
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -239,6 +246,15 @@ def cmd_lint(_):
             problems.append(f"{rel}: tags 缺「错题」")
         if int(wc or 1) >= 3 and "高频错题" not in tags:
             problems.append(f"{rel}: wrong_count≥3 但缺「高频错题」标签")
+        # 重做记录行格式：- 日期 · 对/错 · 评级N（评级持久化，用于正确率统计）
+        if "## 重做记录" in _t:
+            sec = _t.split("## 重做记录", 1)[1].split("\n## ", 1)[0]
+            for line in sec.splitlines():
+                s = line.strip()
+                if s.startswith("- ") and re.search(r"\d{4}-\d{2}-\d{2}", s):
+                    if not re.match(r"^- \d{4}-\d{2}-\d{2} · (对|错) · 评级[1-4]", s):
+                        problems.append(
+                            f"{rel}: 重做记录格式 → {s[:40]}（应为 `- 日期 · 对/错 · 评级N`）")
     print(f"lint 完成：{count} 道错题，{len(problems)} 处问题")
     for p in problems:
         print("  ⚠ " + p)
@@ -468,6 +484,26 @@ def cmd_dashboard(_):
         if nr2 is None or (d0 and nr2 < d0):
             health_issues += 1
 
+    # 重做正确率（解析「重做记录」的结构化行：- 日期 · 对/错 · 评级N，近 8 周）
+    acc_ok = acc_bad = 0
+    for _f, _p, text in parsed:
+        if "## 重做记录" not in text:
+            continue
+        sec = text.split("## 重做记录", 1)[1].split("\n## ", 1)[0]
+        for line in sec.splitlines():
+            m2 = re.match(r"-\s*(\d{4}-\d{2}-\d{2})\s*·\s*(对|错)\s*·\s*评级([1-4])",
+                          line.strip())
+            if not m2:
+                continue
+            dd = date_of(m2.group(1))
+            if not dd or dd < TODAY - dt.timedelta(days=56):
+                continue
+            if m2.group(2) == "对":
+                acc_ok += 1
+            else:
+                acc_bad += 1
+    accuracy = (acc_ok / (acc_ok + acc_bad) * 100) if (acc_ok + acc_bad) else None
+
     exam = _exam_date()
     days_left_v = (exam - TODAY).days if exam else None
     if days_left_v is None:
@@ -520,6 +556,9 @@ def cmd_dashboard(_):
         "achievements": achievements,
         "health_issues": health_issues,
         "phase": phase,
+        "accuracy": accuracy,
+        "acc_ok": acc_ok,
+        "acc_bad": acc_bad,
     }
     page = render(data)
     out = ROOT / "工作台.html"
@@ -527,6 +566,242 @@ def cmd_dashboard(_):
     print(f"工作台已生成：{out}")
     print(f"快照：错题 {total} · 未掌握 {status_counts['未掌握']} · 复习中 {status_counts['复习中']}"
           f" · 已掌握 {status_counts['已掌握']} · 今日到期 {len(due)} · 收件箱 {inbox_n}")
+
+
+# ── 坚果云 WebDAV：手机上传 → 收件箱；附件 → 云端备份 ─────────────────────
+DAV_BASE = "https://dav.jianguoyun.com"
+
+
+def _nutstore_creds():
+    f = ROOT / "工具" / ".nutstore"
+    if not f.exists():
+        return None
+    lines = [ln.strip() for ln in f.read_text(encoding="utf-8", errors="replace").splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    return (lines[0], lines[1]) if len(lines) >= 2 else None
+
+
+def _norm_dav_dir(v, default):
+    if not v:
+        return default
+    v = v.strip()
+    if not v.startswith("/"):
+        v = "/" + v
+    return v if v.endswith("/") else v + "/"
+
+
+def _dav_dirs():
+    inbox, attach = "/dav/考研收件箱/", "/dav/考研附件/"
+    cfg = ROOT / "个人配置.md"
+    if cfg.exists():
+        t = cfg.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"云端收件箱目录[：:]\s*(\S+)", t)
+        if m:
+            inbox = _norm_dav_dir(m.group(1), inbox)
+        m = re.search(r"云端附件目录[：:]\s*(\S+)", t)
+        if m:
+            attach = _norm_dav_dir(m.group(1), attach)
+    return inbox, attach
+
+
+def _q(path):
+    return urllib.parse.quote(path, safe="/")
+
+
+def _dav(method, url, user, pwd, data=None, headers=None, timeout=25):
+    req = urllib.request.Request(url, data=data, method=method)
+    token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("ascii")
+    req.add_header("Authorization", "Basic " + token)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _dav_list(url, user, pwd):
+    body = (b'<?xml version="1.0" encoding="utf-8"?>'
+            b'<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>')
+    with _dav("PROPFIND", url, user, pwd, body,
+              {"Depth": "1", "Content-Type": "application/xml; charset=utf-8"}) as resp:
+        raw = resp.read()
+    root = ET.fromstring(raw)
+    ns = {"d": "DAV:"}
+    base = urllib.parse.urlparse(url).path.rstrip("/")
+    out = []
+    for el in root.findall("d:response", ns):
+        href_el = el.find("d:href", ns)
+        if href_el is None or not href_el.text:
+            continue
+        path = urllib.parse.urlparse(urllib.parse.unquote(href_el.text)).path
+        is_dir = el.find(".//d:resourcetype/d:collection", ns) is not None
+        if is_dir or path.rstrip("/") == base:
+            continue
+        out.append((path.rstrip("/").split("/")[-1], path))
+    return out
+
+
+def _dav_archive_remote(path, inbox_dir, user, pwd):
+    """拉取成功后把云端文件移入 云端收件箱/已处理/，避免重复下载。"""
+    try:
+        _dav("MKCOL", DAV_BASE + inbox_dir + _q("已处理/"), user, pwd)
+    except Exception:
+        pass
+    try:
+        name = path.rstrip("/").split("/")[-1]
+        _dav("MOVE", DAV_BASE + _q(path), user, pwd,
+             headers={"Destination": DAV_BASE + inbox_dir + _q("已处理/" + name),
+                      "Overwrite": "T"})
+    except Exception as e:
+        print(f"  ⚠ 云端移入已处理失败（下次会重复下载）：{e}")
+
+
+def cmd_pull(_):
+    creds = _nutstore_creds()
+    if not creds:
+        print("未配置坚果云凭据。一次性设置：")
+        print("  1) 网页版坚果云 → 账户信息 → 安全选项 → 添加应用密码（名字随意）")
+        print("  2) 在 工具/.nutstore 写两行：账号邮箱、应用密码（该文件已 gitignore）")
+        return
+    user, pwd = creds
+    inbox_dir, _attach = _dav_dirs()
+    try:
+        items = _dav_list(DAV_BASE + inbox_dir, user, pwd)
+    except Exception as e:
+        print(f"拉取失败（网络或凭据问题，稍后再试）：{e}")
+        return
+    dest = ROOT / "收件箱"
+    dest.mkdir(exist_ok=True)
+    got = 0
+    for name, path in items:
+        if name == "说明.md" or name.startswith("."):
+            continue
+        local = dest / name
+        if local.exists():
+            _dav_archive_remote(path, inbox_dir, user, pwd)
+            continue
+        try:
+            with _dav("GET", DAV_BASE + _q(path), user, pwd) as resp:
+                data = resp.read()
+            local.write_bytes(data)
+            got += 1
+            _dav_archive_remote(path, inbox_dir, user, pwd)
+        except Exception as e:
+            print(f"  ⚠ {name}: {e}")
+    print(f"拉取完成：新增 {got} 个文件到 收件箱/" if got else "云端收件箱没有新文件")
+
+
+def cmd_push(_):
+    creds = _nutstore_creds()
+    if not creds:
+        print("未配置坚果云凭据（设置方法见 pull 的提示）。")
+        return
+    user, pwd = creds
+    _inbox, attach_dir = _dav_dirs()
+    src = ROOT / "附件"
+    if not src.exists():
+        print("附件目录不存在")
+        return
+    try:
+        existing = {n for n, _p in _dav_list(DAV_BASE + attach_dir, user, pwd)}
+    except Exception as e:
+        print(f"读取云端附件目录失败：{e}")
+        return
+    up = 0
+    for f in sorted(src.iterdir()):
+        if not f.is_file() or f.name == "说明.md" or f.name in existing:
+            continue
+        try:
+            _dav("PUT", DAV_BASE + attach_dir + urllib.parse.quote(f.name), user, pwd,
+                 f.read_bytes(), {"Content-Type": "application/octet-stream"})
+            up += 1
+        except Exception as e:
+            print(f"  ⚠ {f.name}: {e}")
+    print(f"上传完成：新增 {up} 个附件到云端" if up else "附件云端已是最新")
+
+
+# ── 周报：本周 vs 上周 + 正确率 + 待办 ─────────────────────────────────────
+def cmd_weekly(_):
+    monday = TODAY - dt.timedelta(days=TODAY.weekday())
+    last_mon = monday - dt.timedelta(days=7)
+    parsed = list(error_notes())
+    cur_new = cur_rev = last_new = last_rev = 0
+    acc_ok = acc_bad = 0
+    subj_week, err_week = {}, {}
+    overdue = 0
+    for f, p, text in parsed:
+        st = p.get("status") or ""
+        nr = date_of(p.get("next_review"))
+        if nr and nr <= TODAY and st != "已掌握":
+            overdue += 1
+        d = date_of(p.get("date"))
+        if d:
+            if monday <= d <= TODAY:
+                cur_new += 1
+                subj_week[p.get("subject") or "?"] = subj_week.get(p.get("subject") or "?", 0) + 1
+                err_week[p.get("error") or "?"] = err_week.get(p.get("error") or "?", 0) + 1
+            elif last_mon <= d < monday:
+                last_new += 1
+        rv = p.get("reviews")
+        rv = rv if isinstance(rv, list) else ([rv] if rv else [])
+        for x in rv:
+            dd = date_of(x)
+            if not dd:
+                continue
+            if monday <= dd <= TODAY:
+                cur_rev += 1
+            elif last_mon <= dd < monday:
+                last_rev += 1
+        if "## 重做记录" in text:
+            sec = text.split("## 重做记录", 1)[1].split("\n## ", 1)[0]
+            for line in sec.splitlines():
+                m2 = re.match(r"-\s*(\d{4}-\d{2}-\d{2})\s*·\s*(对|错)\s*·\s*评级([1-4])",
+                              line.strip())
+                if not m2:
+                    continue
+                dd = date_of(m2.group(1))
+                if dd and monday <= dd <= TODAY:
+                    if m2.group(2) == "对":
+                        acc_ok += 1
+                    else:
+                        acc_bad += 1
+    inbox_n = sum(1 for x in (ROOT / "收件箱").iterdir()
+                  if x.is_file() and x.name != "说明.md") if (ROOT / "收件箱").exists() else 0
+    goal = 25
+    cfg = ROOT / "个人配置.md"
+    if cfg.exists():
+        m = re.search(r"每周复习目标[^\d]*(\d+)", cfg.read_text(encoding="utf-8", errors="replace"))
+        if m:
+            goal = max(1, int(m.group(1)))
+    acc = (acc_ok / (acc_ok + acc_bad) * 100) if (acc_ok + acc_bad) else None
+
+    def arrow(a, b):
+        return "↑" if b > a else "↓" if b < a else "＝"
+
+    lines = [
+        f"# {TODAY.isoformat()} 周报", "",
+        f"> 生成于 {dt.datetime.now().strftime('%H:%M')} · 数据来自错题笔记 · 本周范围 {monday.isoformat()} ~ {TODAY.isoformat()}",
+        "", "## 本周数据", "",
+        "| 指标 | 本周 | 上周 | 变化 |", "|---|---|---|---|",
+        f"| 新增错题 | {cur_new} | {last_new} | {arrow(last_new, cur_new)} |",
+        f"| 复习次数 | {cur_rev} | {last_rev} | {arrow(last_rev, cur_rev)} |",
+        f"| 重做正确率 | {'—' if acc is None else f'{acc:.0f}%'} | — | — |",
+        "",
+        "## 科目与错因（本周）", "",
+        "- 科目：" + (" · ".join(f"{k} {v}" for k, v in sorted(subj_week.items(), key=lambda kv: -kv[1])) or "无新增"),
+        "- 错因：" + (" · ".join(f"{k} {v}" for k, v in sorted(err_week.items(), key=lambda kv: -kv[1])) or "无新增"),
+    ]
+    if acc is not None:
+        lines.append(f"- 正确率明细：对 {acc_ok} / 错 {acc_bad}（近 8 周滚动见工作台）")
+    lines += ["", "## 待办", "",
+              f"- 逾期未重做：{overdue} 道（说「今天该重做什么」）",
+              f"- 收件箱待处理：{inbox_n} 张",
+              f"- 本周复习目标：{cur_rev}/{goal} 次",
+              "", "---", "做完重做单后，把结果告诉我（拍照/口头），下周报会自动变准。"]
+    out = ROOT / "重做单" / f"{TODAY.isoformat()} 周报.md"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"周报已生成：{out}")
+    print(f"本周：新增 {cur_new}（上周 {last_new}）· 复习 {cur_rev}（上周 {last_rev}）"
+          f" · 正确率 {'—' if acc is None else f'{acc:.0f}%'} · 逾期 {overdue} · 收件箱 {inbox_n}")
 
 
 def main():
@@ -541,10 +816,14 @@ def main():
     fp.add_argument("--rating", type=int, required=True, choices=[1, 2, 3, 4])
     sub.add_parser("check-agents", help="AGENTS.md 字符数检查")
     sub.add_parser("dashboard", help="生成 工作台.html 本地仪表盘")
+    sub.add_parser("pull", help="从坚果云 WebDAV 拉取手机上传的图到 收件箱/")
+    sub.add_parser("push", help="把 附件/ 新图上传到坚果云做云端备份")
+    sub.add_parser("weekly", help="生成本周周报到 重做单/")
     args = ap.parse_args()
     {"due": cmd_due, "stats": cmd_stats, "lint": cmd_lint,
      "fsrs": cmd_fsrs, "check-agents": cmd_check_agents,
-     "dashboard": cmd_dashboard}[args.cmd](args)
+     "dashboard": cmd_dashboard, "pull": cmd_pull, "push": cmd_push,
+     "weekly": cmd_weekly}[args.cmd](args)
 
 
 if __name__ == "__main__":

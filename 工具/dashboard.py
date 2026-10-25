@@ -402,6 +402,9 @@ def _insights_html(d):
         r = d["review_ratio"]
         tone = "复习跟得上录入 ✅" if r >= 1 else "复习追不上新错题 ⚠️"
         ins.append(("🔁", f"本周复习 {d['week_reviews']} 次 vs 新增 {d['week_new']} 道——<b>{tone}</b>"))
+    if d["accuracy"] is not None:
+        ins.append(("🎯", f"重做正确率：近 8 周 <b>{d['accuracy']:.0f}%</b>"
+                          f"（对 {d['acc_ok']} / 错 {d['acc_bad']}）"))
     advice = []
     if d["overdue"]:
         advice.append(f"优先清掉 {d['overdue']} 道逾期题")
